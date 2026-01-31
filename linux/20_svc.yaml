@@ -1,0 +1,14 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-vm
+  namespace: vm-demo
+spec:
+  selector:
+    kubevirt.io/vm: vm-ubuntu-22
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  type: ClusterIP

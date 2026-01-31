@@ -1,0 +1,32 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: demo-vm-ingress
+  namespace: vm-demo
+  annotations:
+    # 1. Annotation to specify the ClusterIssuer for cert-manager
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  # 2. Specify the IngressClass to be used (nginx)
+  ingressClassName: "nginx"
+  # 3. Define the TLS configuration for the hostname
+  tls:
+  - hosts:
+    - demo-vm.kubev.kkp.demo.kubermatic.io
+    secretName: demo-vm-tls-secret
+
+  # 4. Define the routing rules
+  rules:
+  - host: demo-vm.kubev.kkp.demo.kubermatic.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            # Route traffic to the defined service
+            name: demo-vm
+            port:
+              # Use the service port 80 (defined as 'http' in the Service)
+              number: 80
