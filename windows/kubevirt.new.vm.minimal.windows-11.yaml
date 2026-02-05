@@ -9,103 +9,88 @@ spec:
   resources:
     requests:
       storage: 80Gi
-  storageClassName: local-path
-  #volumeMode: Block
 ---
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
   labels:
-    kubevirt.io/vm: vm-windows-11
+    special: vm-windows-11
   name: vm-windows-11
 spec:
   runStrategy: Always
   template:
-    metadata:
-      labels:
-        kubevirt.io/vm: vm-windows-11
-        kubevirt.io/os: windows11
     spec:
       domain:
-        # --- CPU / Memory ---
-        cpu:
-          cores: 2 # Example value, adjust as needed
-        resources:
-          requests:
-            memory: "4Gi" # Example value
-
-        # --- Features (Crucial for Windows) ---
-        features:
-          acpi: {} # Standard Power Management
-          apic: {} # Interrupt Controller
-          smm: {}
-          # Hyper-V enlightenments significantly improve performance
-          hyperv:
-            relaxed: {}
-            spinlocks:
-              spinlocks: 8191
-
         # --- Clock (align with Hyper-V) ---
         clock:
-          utc: {}
           timer:
-            # Use hyperv timer
             hpet:
               present: false
             hyperv: {}
-            # pit / rtc often have 'catchup' tickPolicy
             pit:
               tickPolicy: delay
             rtc:
               tickPolicy: catchup
+          utc: {}
+        # --- Resources (CPU & Mem)
+        cpu:
+          cores: 2 # Sample value, please set accordingly to your environment
+        resources:
+          requests:
+            memory: 4Gi # Sample value, please set accordingly to your environment
+        # --- Devices ---
+        devices:
+          # OS Disk (using virtio is recommended for performance)
+          disks:
+          - disk:
+              bus: sata
+            name: pvcdisk
+          # CD-ROM for Install ISO
+          - cdrom:
+              bus: sata
+            name: winiso
+          # CD-ROM for Virtio Drivers
+          - name: virtiocd
+            cdrom:
+              bus: sata
+          interfaces:
+          # Network interface (masquerade is simple, bridge requires CNI setup)
+          - masquerade: {}
+            model: e1000
+            name: default
+          # TMP: Crucial for Windows 11 (only needs to be present, not acually usable for the install)
+          tpm: {}
 
-        # --- Firmware (EFI is standard for Win10+) ---
+        # --- Features (Optimizations for Windows) ---
+        features:
+          acpi: {}
+          apic: {}
+          hyperv:
+            relaxed: {}
+            spinlocks:
+              spinlocks: 8191
+            vapic: {}
+          smm: {}
+        # --- Firmware (EFI, secureboot and uuid are required for win 11)
         firmware:
           bootloader:
             efi:
-              secureBoot: true # Needed for windows 11
-              # persistent: true # If you need to store EFI vars
-          uuid: 5d307ca9-b3ef-428c-8861-06e72d69f223 # Needs to be set for windows 11
-        # --- Devices ---
-        devices:
-          disks:
-            # OS Disk (using virtio is recommended for performance)
-            - name: osdisk
-              disk:
-                bus: virtio # Use virtio after drivers are installed
-              # bootOrder: 1 # Make sure this boots after install
-            # CD-ROM for Install ISO
-            - name: installiso
-              cdrom:
-                bus: sata # SATA is usually fine for installer ISO
-              # bootOrder: 2 # Boot this first during initial install
-            # CD-ROM for Virtio Drivers
-            - name: virtiocd
-              cdrom:
-                bus: sata
-              # bootOrder: 3 # Make this available during install
-
-          interfaces:
-          # Network interface (masquerade is simple, bridge requires CNI setup)
-          - name: default
-            masquerade: { }
-            model: e1000
-            # model: virtio # Use virtio for performance after drivers are installed
-            # model: e1000 # Your spec uses e1000, safer initial default if virtio drivers aren't available yet
-
+              secureBoot: true
+          uuid: 5d307ca9-b3ef-428c-8861-06e72d69f223
+      # --- Networks (just the default network)
       networks:
-        - name: default
-          pod: {}
+      - name: default
+        pod: {}
       terminationGracePeriodSeconds: 30
 
       # --- Volumes ---
       volumes:
-      - name: osdisk
+      - name: pvcdisk
         persistentVolumeClaim:
           claimName: vm-windows-11-disk
-      - name: installiso
-        dataVolume:
-          name: vm-windows-11-iso
+      - name: winiso
+        persistentVolumeClaim:
+          claimName: win11-25h2-x64
       - containerDisk:
           image: kubevirt/virtio-container-disk
         name: virtiocd
