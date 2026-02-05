@@ -135,14 +135,18 @@ spec:
               cdrom:
                 bus: sata
               # bootOrder: 3 # Make this available during install
-
-          interfaces:
+          
           # Network interface (masquerade is simple, bridge requires CNI setup)
+          interfaces:
           - name: default
             masquerade: { }
             model: e1000
             # model: virtio # Use virtio for performance after drivers are installed
             # model: e1000 # Your spec uses e1000, safer initial default if virtio drivers aren't available yet
+          
+          # TPM: Crucial for Windows 11 (only needs to be present, not acually usable for the install)
+          tpm: {}
+            # persistent: true # Needs to be enabled for bitlocker, not for a "normal" install
 
       networks:
         - name: default
