@@ -1,16 +1,16 @@
-# apiVersion: v1
-# kind: Service
-# metadata:
-#   name: vm-windows-11
-#   annotations:
-#     external-dns.alpha.kubernetes.io/hostname: "windows-10.tobi.demo.kubermatic.io"
-# spec:
-#   ports:
-#   - name: rdp
-#     port: 3389
-#   selector:
-#     kubevirt.io/vm: vm-windows-11
-#   type: LoadBalancer
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-windows-11
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: "windows-10.tobi.demo.kubermatic.io"
+spec:
+  ports:
+  - name: rdp
+    port: 3389
+  selector:
+    kubevirt.io/vm: vm-windows-11
+  type: LoadBalancer
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -145,8 +145,8 @@ spec:
             # model: e1000 # Your spec uses e1000, safer initial default if virtio drivers aren't available yet
           
           # TPM: Crucial for Windows 11 (only needs to be present, not acually usable for the install)
-          tpm: {}
-            # persistent: true # Needs to be enabled for bitlocker, not for a "normal" install
+          tpm:
+            persistent: true # Needs to be enabled for bitlocker, not for a "normal" install
 
       networks:
         - name: default
