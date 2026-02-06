@@ -22,7 +22,7 @@ spec:
   resources:
     requests:
       storage: 50Gi
-  storageClassName: local-path
+  storageClassName: kubev-vms
   #volumeMode: Block
 ---
 apiVersion: kubevirt.io/v1
@@ -39,7 +39,7 @@ spec:
     spec:
       source:
         http:
-          url: http://vm-image-registry.kube-system.svc/vms/win10-10.2025.iso
+          url: http://vm-image-registry.kube-system.svc/vms/win10-2026-02.iso
       storage:
         accessModes:
           - ReadWriteOnce
@@ -47,7 +47,7 @@ spec:
         resources:
           requests:
             storage: 20Gi
-        storageClassName: local-path
+        storageClassName: kubev-vms
   #######
 
   runStrategy: Always

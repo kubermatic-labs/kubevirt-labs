@@ -42,7 +42,7 @@ spec:
         resources:
           requests:
             storage: 15G
-        storageClassName: local-path
+        storageClassName: kubev-vms
   runStrategy: Always
   template:
     metadata:

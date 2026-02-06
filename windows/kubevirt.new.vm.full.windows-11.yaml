@@ -22,7 +22,7 @@ spec:
   resources:
     requests:
       storage: 80Gi
-  storageClassName: local-path
+  storageClassName: kubev-vms
   #volumeMode: Block
 ---
 apiVersion: kubevirt.io/v1
@@ -47,7 +47,7 @@ spec:
         resources:
           requests:
             storage: 20Gi
-        storageClassName: local-path
+        storageClassName: kubev-vms
   #######
 
   runStrategy: Always
