@@ -16,6 +16,7 @@ You can remove the TPM device from the manifest if you don't need it for the ins
 
 A more complete VM manifest for Windows 11, with additional resources and features enabled.
 This manifest includes a TPM device with persistence, allowing you to store keys across reboots (e.g., for BitLocker).
+It also includes a service of type `LoadBalancer` to expose RDP access to the VM, which can be useful for remote management after the installation is complete.
 
 ## How to use these samples
 
