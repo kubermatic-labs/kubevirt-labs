@@ -5,7 +5,7 @@ metadata:
   name: vm-windows-11-disk
 spec:
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteMany # Use ReadWriteMany if your storage supports it, otherwise use ReadWriteOnce but that blocks live migrations
   resources:
     requests:
       storage: 80Gi
