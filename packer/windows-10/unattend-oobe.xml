@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+
+  <!-- Applied after sysprep /generalize on first boot of cloned VMs -->
+
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>0407:00000407</InputLocale>
+      <SystemLocale>de-DE</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>de-DE</UserLocale>
+    </component>
+  </settings>
+
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>0407:00000407</InputLocale>
+      <SystemLocale>de-DE</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>de-DE</UserLocale>
+    </component>
+
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <!-- Skip all OOBE screens -->
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <ProtectYourPC>3</ProtectYourPC>
+      </OOBE>
+
+      <!-- Offline local account -->
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add">
+            <Password>
+              <Value>toor</Value>
+              <PlainText>true</PlainText>
+            </Password>
+            <Name>root</Name>
+            <Group>Administrators</Group>
+          </LocalAccount>
+        </LocalAccounts>
+      </UserAccounts>
+
+      <!-- Auto-login so the desktop is immediately ready -->
+      <AutoLogon>
+        <Password>
+          <Value>toor</Value>
+          <PlainText>true</PlainText>
+        </Password>
+        <Username>root</Username>
+        <Enabled>true</Enabled>
+      </AutoLogon>
+    </component>
+  </settings>
+</unattend>
