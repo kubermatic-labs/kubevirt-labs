@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: win10-demo
+  name: win10-golden
 ---
-# RBAC: Allow the default SA in win10-demo to clone DataVolumes from vm-images
+# RBAC: Allow the default SA in win10-golden to clone DataVolumes from vm-images
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -25,15 +25,15 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: default
-  namespace: win10-demo
+  namespace: win10-golden
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: win10-demo
-  namespace: win10-demo
+  name: win10-golden
+  namespace: win10-golden
   annotations:
-    external-dns.alpha.kubernetes.io/hostname: "win10-demo.tobi.demo.kubermatic.io"
+    external-dns.alpha.kubernetes.io/hostname: "win10-golden.tobi.demo.kubermatic.io"
 spec:
   ports:
   - name: rdp
@@ -41,16 +41,16 @@ spec:
   - name: http
     port: 80
   selector:
-    kubevirt.io/vm: win10-demo
+    kubevirt.io/vm: win10-golden
   type: LoadBalancer
 ---
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
-  name: win10-demo
-  namespace: win10-demo
+  name: win10-golden
+  namespace: win10-golden
   labels:
-    kubevirt.io/vm: win10-demo
+    kubevirt.io/vm: win10-golden
 spec:
   # Instance type and preference manage CPU, memory, firmware, Hyper-V, clock, etc.
   instancetype:
@@ -63,7 +63,7 @@ spec:
   # Clone the golden image into a new disk for this VM
   dataVolumeTemplates:
   - metadata:
-      name: win10-demo-disk
+      name: win10-golden-disk
     spec:
       sourceRef:
         kind: DataSource
@@ -72,7 +72,6 @@ spec:
       storage:
         accessModes:
         - ReadWriteMany
-        #- ReadWriteOnce
         resources:
           requests:
             storage: 50Gi
@@ -82,7 +81,7 @@ spec:
   template:
     metadata:
       labels:
-        kubevirt.io/vm: win10-demo
+        kubevirt.io/vm: win10-golden
         kubevirt.io/os: windows10
     spec:
       dnsConfig:
@@ -94,7 +93,7 @@ spec:
           disks:
           - name: rootdisk
             disk:
-              bus: scsi
+              bus: virtio
             bootOrder: 1
           interfaces:
           - name: default
@@ -106,4 +105,4 @@ spec:
       volumes:
       - name: rootdisk
         dataVolume:
-          name: win10-demo-disk
+          name: win10-golden-disk

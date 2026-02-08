@@ -7,7 +7,9 @@ PREFERENCE ?= windows.10.virtio
 
 DEMO_NS ?= win10-golden
 
-.PHONY: help setup iso-wait init build all clean status check-prereqs vnc vm-yaml verify verify-stop deploy deploy-status deploy-vnc deploy-destroy
+OUTPUT_DIR ?= ./generated
+
+.PHONY: help setup iso-wait init build all clean status check-prereqs vnc vm-yaml verify verify-stop deploy deploy-status deploy-vnc deploy-destroy generate
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -75,6 +77,14 @@ verify: ## Start the golden image VM and verify it boots
 	@kubectl -n $(NAMESPACE) get dv $(VM_NAME) -o jsonpath='Phase: {.status.phase}{"\n"}' 2>/dev/null \
 		|| (echo "ERROR: DataVolume '$(VM_NAME)' not found." && false)
 	@echo ""
+	@echo "=== Ensuring sysprep ConfigMap exists (Packer build leftover, needs unattend.xml key) ==="
+	kubectl -n $(NAMESPACE) create configmap $(VM_NAME) \
+		--from-literal='unattend.xml=<?xml version="1.0" encoding="utf-8"?><unattend xmlns="urn:schemas-microsoft-com:unattend"/>' \
+		--dry-run=client -o yaml | kubectl apply -f -
+	@echo ""
+	@echo "=== Creating RDP Service ==="
+	kubectl apply -n $(NAMESPACE) -f verify-rdp-service.yaml
+	@echo ""
 	@echo "=== Starting golden image VM ==="
 	virtctl -n $(NAMESPACE) start $(VM_NAME) || true
 	@echo "Waiting for VMI to be ready..."
@@ -83,11 +93,16 @@ verify: ## Start the golden image VM and verify it boots
 	@echo "=== VM is running! ==="
 	kubectl -n $(NAMESPACE) get vmi $(VM_NAME)
 	@echo ""
+	@echo "=== RDP Service ==="
+	kubectl -n $(NAMESPACE) get svc $(VM_NAME)-rdp
+	@echo ""
 	@echo "Connect via VNC:  make vnc"
+	@echo "Connect via RDP:  kubectl -n $(NAMESPACE) get svc $(VM_NAME)-rdp"
 	@echo "Stop after test:  make verify-stop"
 
-verify-stop: ## Stop the golden image VM after verification
+verify-stop: ## Stop the golden image VM and clean up RDP service
 	virtctl -n $(NAMESPACE) stop $(VM_NAME)
+	kubectl -n $(NAMESPACE) delete -f verify-rdp-service.yaml --ignore-not-found
 
 deploy: ## Deploy a VM from the golden image (DEMO_NS=<name> to override)
 	sed 's/win10-demo/$(DEMO_NS)/g' vm-from-golden-image.yaml | kubectl apply -f -
@@ -123,3 +138,11 @@ deploy-vnc: ## Open VNC console to the deployed demo VM
 
 deploy-destroy: ## Delete the deployed demo VM and namespace
 	sed 's/win10-demo/$(DEMO_NS)/g' vm-from-golden-image.yaml | kubectl delete -f - --ignore-not-found
+
+generate: ## Generate manifest to OUTPUT_DIR (DEMO_NS=<name> OUTPUT_DIR=<path>)
+	@mkdir -p $(OUTPUT_DIR)
+	sed 's/win10-demo/$(DEMO_NS)/g' vm-from-golden-image.yaml > $(OUTPUT_DIR)/vm-$(DEMO_NS).yaml
+	@echo "Generated: $(OUTPUT_DIR)/vm-$(DEMO_NS).yaml"
+	@echo ""
+	@echo "Apply with:   kubectl apply -f $(OUTPUT_DIR)/vm-$(DEMO_NS).yaml"
+	@echo "Delete with:  kubectl delete -f $(OUTPUT_DIR)/vm-$(DEMO_NS).yaml"
