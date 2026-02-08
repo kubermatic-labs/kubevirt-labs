@@ -1,5 +1,5 @@
 
-upload via kubectl cp to the [registry server](../hack/vm-image-registry.yaml)
+upload via kubectl cp to the [registry server](../../hack/vm-image-registry.yaml)
 check images 
 k exec -n kube-system vm-image-registry-79bbbf66c-5zfxk -- ls -lah /usr/share/nginx/html/vms/
 
