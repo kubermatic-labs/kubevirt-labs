@@ -1,0 +1,51 @@
+apiVersion: instancetype.kubevirt.io/v1beta1
+kind: VirtualMachineClusterPreference
+metadata:
+  annotations:
+    iconClass: icon-windows
+    kubevirt.io/generation: "2"
+    kubevirt.io/install-strategy-identifier: 552a95d68dd9a959d18160934becada99f61f096
+    kubevirt.io/install-strategy-registry: quay.io/kubevirt
+    kubevirt.io/install-strategy-version: v1.5.3
+    openshift.io/display-name: Microsoft Windows 10
+    openshift.io/documentation-url: https://github.com/kubevirt/common-instancetypes
+    openshift.io/provider-display-name: KubeVirt
+    openshift.io/support-url: https://github.com/kubevirt/common-instancetypes/issues
+    tags: hidden,kubevirt,windows
+  labels:
+    app.kubernetes.io/component: kubevirt
+    app.kubernetes.io/managed-by: virt-operator
+    instancetype.kubevirt.io/common-instancetypes-version: v1.3.1
+    instancetype.kubevirt.io/os-type: windows
+    instancetype.kubevirt.io/vendor: kubevirt.io
+  name: windows.10
+spec:
+  annotations:
+    vm.kubevirt.io/os: windows
+  clock:
+    preferredTimer:
+      hpet:
+        present: false
+      pit:
+        tickPolicy: delay
+      rtc:
+        tickPolicy: catchup
+  cpu:
+    preferredCPUTopology: sockets
+  devices:
+    preferredAutoattachInputDevice: true
+    preferredDiskBus: sata
+    preferredInterfaceModel: e1000e
+  features:
+    preferredHyperv:
+      spinlocks:
+        spinlocks: 8191
+  firmware:
+    preferredEfi:
+      secureBoot: true
+  preferredTerminationGracePeriodSeconds: 3600
+  requirements:
+    cpu:
+      guest: 1
+    memory:
+      guest: 2Gi

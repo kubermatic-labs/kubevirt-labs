@@ -1,0 +1,36 @@
+### AUTO INSTALLED BY OPERATOR!!!
+apiVersion: instancetype.kubevirt.io/v1beta1
+kind: VirtualMachineClusterInstancetype
+metadata:
+  annotations:
+    instancetype.kubevirt.io/description: |-
+      The U Series is quite neutral and provides resources for
+      general purpose applications.
+
+      *U* is the abbreviation for "Universal", hinting at the universal
+      attitude towards workloads.
+
+      VMs of instance types will share physical CPU cores on a
+      time-slice basis with other VMs.
+    instancetype.kubevirt.io/displayName: General Purpose
+    kubevirt.io/generation: "2"
+    kubevirt.io/install-strategy-identifier: 552a95d68dd9a959d18160934becada99f61f096
+    kubevirt.io/install-strategy-registry: quay.io/kubevirt
+    kubevirt.io/install-strategy-version: v1.5.3
+  labels:
+    app.kubernetes.io/component: kubevirt
+    app.kubernetes.io/managed-by: virt-operator
+    instancetype.kubevirt.io/class: general.purpose
+    instancetype.kubevirt.io/common-instancetypes-version: v1.3.1
+    instancetype.kubevirt.io/cpu: "2"
+    instancetype.kubevirt.io/icon-pf: pficon-server-group
+    instancetype.kubevirt.io/memory: 8Gi
+    instancetype.kubevirt.io/size: large
+    instancetype.kubevirt.io/vendor: kubevirt.io
+    instancetype.kubevirt.io/version: "1"
+  name: u1.large
+spec:
+  cpu:
+    guest: 2
+  memory:
+    guest: 8Gi
