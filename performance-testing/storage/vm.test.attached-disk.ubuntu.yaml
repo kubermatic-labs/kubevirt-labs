@@ -38,7 +38,8 @@ spec:
           #url: https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img
       storage:
         accessModes:
-        - ReadWriteOnce
+        #- ReadWriteOnce
+        - ReadWriteMany
         resources:
           requests:
             storage: 15G
@@ -53,7 +54,8 @@ spec:
         blank: {}
       storage:
         accessModes:
-        - ReadWriteOnce
+        #- ReadWriteOnce
+        - ReadWriteMany
         resources:
           requests:
             storage: 10G
@@ -90,21 +92,17 @@ spec:
           - disk:
               bus: virtio
             name: cloudinitdisk
-#          interfaces:
-#          - bridge: {}
-#            name: default
-#          networkInterfaceMultiqueue: true
-#        machine:
-#          type: q35
+          interfaces:
+          - masquerade: {}
+            name: default
         resources:
           limits:
             memory: 4G
           requests:
             memory: 4G
-#      evictionStrategy: External
-#      networks:
-#      - name: default
-#        pod: {}
+      networks:
+      - name: default
+        pod: {}
       terminationGracePeriodSeconds: 30
       volumes:
       - dataVolume:
