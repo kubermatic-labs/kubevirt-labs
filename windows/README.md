@@ -33,7 +33,7 @@ It also includes a service of type `LoadBalancer` to expose RDP access to the VM
     kubectl get vm win11 -n default -w
     ```
 
-5. Once the VM is running, you can connect to it via VNC using `virtctl` to complete the Windows installation:
+5. Once the VM is running, you can connect to it via VNC using `virtctl` to complete the Windows installation (you might need to Press Shirt+F10 and enter `start ms-cxh:localonly` duing the installation after the first reboot to bypass the Microsoft account requirement and create a local account instead):
 
     ```bash
     # I recommend using the `--proxy-only` flag to avoid issues with VNC connections and to use your own favorite VNC client. This will forward the VNC connection to your local machine, and you can connect to it using a VNC client (e.g., TigerVNC, RealVNC).
