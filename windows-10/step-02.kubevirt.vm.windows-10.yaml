@@ -141,8 +141,8 @@ spec:
             # OS Disk (using virtio is recommended for performance)
             - name: osdisk
               disk:
-                bus: virtio
-                #bus: scsi
+                #bus: virtio not working
+                bus: scsi
                 #bus: sata
               bootOrder: 1
 #            # CD-ROM for Install ISO
@@ -160,9 +160,9 @@ spec:
           # Network interface (masquerade is simple, bridge requires CNI setup)
           - name: default
             masquerade: { }
-            model: virtio
             # model: virtio # Use virtio for performance after drivers are installed
             # model: e1000 # Your spec uses e1000, safer initial default if virtio drivers aren't available yet
+            #model: e1000e
         machine:
           type: q35
       networks:
