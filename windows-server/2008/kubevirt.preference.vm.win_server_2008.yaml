@@ -1,0 +1,125 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vm-win-server-08
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-win-server-08
+  namespace: vm-win-server-08
+#  annotations:
+#    external-dns.alpha.kubernetes.io/hostname: "windows-10.tobi.demo.kubermatic.io"
+spec:
+  ports:
+  - name: rdp
+    port: 3389
+  selector:
+    kubevirt.io/vm: vm-win-server-08
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vm-win-server-08-disk
+  namespace: vm-win-server-08
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: kubev-vms
+  volumeMode: Block
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  labels:
+    kubevirt.io/vm: vm-win-server-08
+  name: vm-win-server-08
+  namespace: vm-win-server-08
+spec:
+  # Use KubeVirt common instance types and preferences.
+  # These CRDs must exist in the cluster — install via:
+  #   kubectl apply -f https://github.com/kubevirt/common-instancetypes/releases/latest/download/common-clusterinstancetypes-bundle.yaml
+  #   kubectl apply -f https://github.com/kubevirt/common-instancetypes/releases/latest/download/common-clusterpreferences-bundle.yaml
+  instancetype:
+    kind: VirtualMachineClusterInstancetype
+    name: u1.large
+  preference:
+    kind: VirtualMachineClusterPreference
+    name: windows.2k16
+
+  dataVolumeTemplates:
+  - metadata:
+      creationTimestamp: null
+      name: vm-win-server-08-iso
+    spec:
+      source:
+        http:
+          url: http://vm-image-registry.kube-system.svc/vms/win_server_2008_ms-2026-02.iso
+          #url: http://vm-image-registry.kube-system.svc/vms/win_server_2008-2026-02.iso
+      storage:
+        accessModes:
+          - ReadWriteOnce
+        # - ReadWriteMany
+        resources:
+          requests:
+            storage: 5Gi
+        storageClassName: kubev-vms
+        #volumeMode: Filesystem
+  #######
+
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: vm-win-server-08
+        kubevirt.io/os: windows
+      annotations:
+        kubevirt.io/disablePCIHole64: "true"
+    spec:
+      dnsConfig:
+        nameservers:
+        - 8.8.8.8
+      dnsPolicy: None
+      domain:
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: false
+        # CPU and memory are managed by the instancetype (u1.large = 2 cores, 4Gi RAM).
+        # Features, clock, firmware, and machine type are managed by the preference (windows.10.virtio).
+        devices:
+          disks:
+            - name: osdisk
+              disk:
+                # needed to boot first
+                bus: sata
+              bootOrder: 1
+            - name: installiso
+              cdrom:
+                bus: sata
+              bootOrder: 2
+            - name: virtiocd
+              cdrom:
+                bus: sata
+              bootOrder: 3
+          interfaces:
+          - name: default
+            masquerade: {}
+      networks:
+        - name: default
+          pod: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: osdisk
+        persistentVolumeClaim:
+          claimName: vm-win-server-08-disk
+      - name: installiso
+        dataVolume:
+          name: vm-win-server-08-iso
+      - containerDisk:
+          image: quay.io/kubevirt/virtio-container-disk:v1.5.3
+        name: virtiocd
