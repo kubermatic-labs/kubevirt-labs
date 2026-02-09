@@ -1,0 +1,113 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-win-server-2025
+spec:
+  ports:
+  - name: rdp
+    port: 3389
+  selector:
+    kubevirt.io/vm: vm-win-server-2025
+  type: NodePort
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vm-win-server-2025-disk
+spec:
+  accessModes:
+    - ReadWriteMany # Use ReadWriteMany if your storage supports it, otherwise use ReadWriteOnce but that blocks live migrations
+  resources:
+    requests:
+      storage: 80Gi
+  storageClassName: kubev-vms
+  volumeMode: Block
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  labels:
+    special: vm-win-server-2025
+  name: vm-win-server-2025
+spec:
+  runStrategy: Always
+  template:
+    spec:
+      dnsConfig:
+        nameservers:
+        - 8.8.8.8
+      dnsPolicy: None
+      domain:
+        # --- Clock (align with Hyper-V) ---
+        clock:
+          timer:
+            hpet:
+              present: false
+            hyperv: {}
+            pit:
+              tickPolicy: delay
+            rtc:
+              tickPolicy: catchup
+          utc: {}
+        # --- Resources (CPU & Mem)
+        cpu:
+          cores: 4 # Sample value, please set accordingly to your environment
+        resources:
+          requests:
+            memory: 8Gi # Sample value, please set accordingly to your environment
+        # --- Devices ---
+        devices:
+          # OS Disk (using virtio is recommended for performance)
+          disks:
+          - disk:
+              bus: sata
+            name: pvcdisk
+          # CD-ROM for Install ISO
+          - cdrom:
+              bus: sata
+            name: winiso
+          # CD-ROM for Virtio Drivers
+          - name: virtiocd
+            cdrom:
+              bus: sata
+          interfaces:
+          # Network interface (masquerade is simple, bridge requires CNI setup)
+          - masquerade: {}
+            name: default
+          # TMP: Should be set for modern Windows versions
+          tpm: {}
+
+        # --- Features (Optimizations for Windows) ---
+        features:
+          acpi: {}
+          apic: {}
+          hyperv:
+            relaxed: {}
+            spinlocks:
+              spinlocks: 8191
+            vapic: {}
+          smm: {}
+        # --- Firmware (EFI, secureboot and uuid are required for win 11)
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: true
+          uuid: 5d307ca9-b3ef-428c-8861-06e72d69f223
+      # --- Networks (just the default network)
+      networks:
+      - name: default
+        pod: {}
+      terminationGracePeriodSeconds: 30
+
+      # --- Volumes ---
+      volumes:
+      - name: pvcdisk
+        persistentVolumeClaim:
+          claimName: vm-win-server-2025-disk
+      - name: winiso
+        persistentVolumeClaim:
+          claimName: winserver-25
+      - containerDisk:
+          image: kubevirt/virtio-container-disk
+        name: virtiocd
