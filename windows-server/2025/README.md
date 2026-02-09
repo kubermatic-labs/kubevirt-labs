@@ -84,3 +84,9 @@
 6. Continue with "Next" until you reach the "Confirmation" section and click on "Install"
 7. After the installation is complete, your server manager now includes the "AD DS" section.
 8. Click on the flag on the top right and select "Promote this server to a domain controller" to continue with the configuration of your Active Directory
+
+## What works (or did not)
+
+- Installing the VirtIO SCSI Drivers resulted in a signature verification error during the next boot, completely breaking booting the VM
+  ![driver signature error](./.assets/driversig.png)
+
