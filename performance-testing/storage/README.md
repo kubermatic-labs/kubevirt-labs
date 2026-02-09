@@ -122,6 +122,7 @@ Date: `2026-02-04 ++`
 | gcp   | kubev | Windows VM with guest utils, bus `scsi`               | ceph, replica 3, kubev-vms      | 38.9MiB/s | 9964   | 38.9MiB/s | 9971   |      |
 | gcp   | kubev | Windows VM with guest utils, bus `sata`               | ceph, replica 3, kubev-main     | 5.6MiB/s  | 1415   | 5.6MiB/s  | 1415   |      |
 | gcp   | kubev | Windows VM with guest utils, bus `sata`               | cephfs, replica 3, kubev-main   | 3.2MiB/s  | 778    | 3.2MiB/s  | 798    |      |
+| gcp   | kubev | Windows Server VM no guest utils, bus `sata`          | ceph replica 3, kubev-vms       | 5.9MiB/s  | 1475   | 5.9MiB/s  | 1475   |      |
 
 ### FOG System - Ceph Cluster
 
