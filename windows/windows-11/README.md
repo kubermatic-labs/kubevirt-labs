@@ -106,3 +106,10 @@ kubectl port-forward -n kubevirt-cdi svc/cdi-uploadproxy 8443:443
     ```
 
 Once the upload is complete, the DataVolume will be ready to use as a source for creating a VM. You can create a VM that uses this DataVolume as its disk source, and then boot from it to install Windows.
+
+
+## What works (or did not)
+
+- VirtIO Booting did not work just resulting in a boot loop at the UEFI screen, even after installing the VirtIO drivers during install
+- The E1000 network driver works out of the box, not setting any model can result in a working network connection as well, but I had some issues with it during installation, so I recommend using E1000 for the installation process and then switching to virtio after the installation is complete and the virtio drivers are installed.
+- TPM for Installation works, but I somehow broke two persistent TPM VMs during my BitLocker testing
