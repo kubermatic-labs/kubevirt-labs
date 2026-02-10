@@ -1,0 +1,28 @@
+# Create a snapshot of the Windows 10 VM.
+#
+# Prerequisites:
+#   - CSI driver must support VolumeSnapshots (VolumeSnapshotClass must exist)
+#   - Snapshot feature gate must be enabled in the KubeVirt CR
+#   - The VM should ideally have a QEMU guest agent installed for
+#     application-consistent (quiesced) snapshots. Without it, the snapshot
+#     will be crash-consistent.
+#
+# Usage:
+#   kubectl apply -f 01-snapshot.yaml
+#
+# Check status:
+#   kubectl -n vm-win-10-preset get virtualmachinesnapshot snap-vm-win-10-preset
+#   kubectl -n vm-win-10-preset wait virtualmachinesnapshot snap-vm-win-10-preset --for=condition=Ready
+#
+apiVersion: snapshot.kubevirt.io/v1beta1
+kind: VirtualMachineSnapshot
+metadata:
+  name: snap-vm-win-10-preset
+  namespace: vm-win-10-preset
+spec:
+  source:
+    apiGroup: kubevirt.io
+    kind: VirtualMachine
+    name: vm-win-10-preset
+  # Time limit for the snapshot to complete. Default is 5m.
+  failureDeadline: 10m

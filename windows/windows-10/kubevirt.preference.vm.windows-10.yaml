@@ -89,8 +89,9 @@ spec:
           disks:
             - name: osdisk
               disk:
-                # needed to boot first
-                bus: sata
+                #bus: virtio not working
+                bus: scsi
+                #bus: sata
               bootOrder: 1
             - name: installiso
               cdrom:

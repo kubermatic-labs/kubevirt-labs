@@ -1,0 +1,31 @@
+# Restore the Windows 10 VM from a previously created snapshot.
+#
+# IMPORTANT: The VM must be stopped before restoring!
+#   virtctl stop vm-win-10-preset -n vm-win-10-preset
+#
+# Usage:
+#   kubectl apply -f 02-restore.yaml
+#
+# Check status:
+#   kubectl -n vm-win-10-preset get virtualmachinerestore restore-vm-win-10-preset
+#   kubectl -n vm-win-10-preset wait virtualmachinerestore restore-vm-win-10-preset --for=condition=Ready
+#
+# After restore completes, start the VM again:
+#   virtctl start vm-win-10-preset -n vm-win-10-preset
+#
+apiVersion: snapshot.kubevirt.io/v1beta1
+kind: VirtualMachineRestore
+metadata:
+  name: restore-vm-win-10-preset
+  namespace: vm-win-10-preset
+spec:
+  target:
+    apiGroup: kubevirt.io
+    kind: VirtualMachine
+    name: vm-win-10-preset
+  virtualMachineSnapshotName: snap-vm-win-10-preset
+  # StopTarget: automatically stop the VM if it is running before restoring.
+  targetReadinessPolicy: StopTarget
+  # InPlace: restore volumes in-place (overwrites existing data).
+  # Use RandomizeNames to create new PVCs instead.
+  #volumeRestorePolicy: InPlace
