@@ -1,0 +1,113 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vm-win-xp
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-win-xp
+  namespace: vm-win-xp
+spec:
+  ports:
+  - name: rdp
+    port: 3389
+  selector:
+    kubevirt.io/vm: vm-win-xp
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vm-win-xp-disk
+  namespace: vm-win-xp
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: kubev-vms
+  volumeMode: Block
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  labels:
+    kubevirt.io/vm: vm-win-xp
+  name: vm-win-xp
+  namespace: vm-win-xp
+spec:
+  instancetype:
+    kind: VirtualMachineClusterInstancetype
+    name: u1.large
+  preference:
+    kind: VirtualMachineClusterPreference
+    name: windows.2k16
+
+  dataVolumeTemplates:
+  - metadata:
+      creationTimestamp: null
+      name: vm-win-xp-iso
+    spec:
+      source:
+        http:
+          url: http://vm-image-registry.kube-system.svc/vms/win-xp-sp3.iso
+      storage:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi
+        storageClassName: kubev-vms
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: vm-win-xp
+        kubevirt.io/os: windows
+      annotations:
+        kubevirt.io/disablePCIHole64: "true"
+    spec:
+      dnsConfig:
+        nameservers:
+        - 8.8.8.8
+      dnsPolicy: None
+      domain:
+        firmware:
+          bootloader:
+            bios: {}
+        machine:
+          type: pc
+        devices:
+          disks:
+            - name: osdisk
+              disk:
+                # needed to boot first
+                bus: sata
+              bootOrder: 1
+            - name: installiso
+              cdrom:
+                bus: sata
+              bootOrder: 2
+            - name: virtiocd
+              cdrom:
+                bus: sata
+              bootOrder: 3
+          interfaces:
+          - name: default
+            masquerade: {}
+      networks:
+        - name: default
+          pod: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: osdisk
+        persistentVolumeClaim:
+          claimName: vm-win-xp-disk
+      - name: installiso
+        dataVolume:
+          name: vm-win-xp-iso
+      - containerDisk:
+          image: quay.io/kubevirt/virtio-container-disk:v1.5.3
+        name: virtiocd
