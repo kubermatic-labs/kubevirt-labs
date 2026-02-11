@@ -87,8 +87,9 @@ spec:
       domain:
         firmware:
           bootloader:
-            efi:
-              secureBoot: false
+            bios: {}
+        machine:
+          type: pc
         # CPU and memory are managed by the instancetype (u1.large = 2 cores, 4Gi RAM).
         # Features, clock, firmware, and machine type are managed by the preference (windows.10.virtio).
         devices:
