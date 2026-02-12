@@ -1,28 +1,26 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: vm-win-server-08
+  name: vm-win-xp
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: vm-win-server-08
-  namespace: vm-win-server-08
-#  annotations:
-#    external-dns.alpha.kubernetes.io/hostname: "windows-10.tobi.demo.kubermatic.io"
+  name: vm-win-xp
+  namespace: vm-win-xp
 spec:
   ports:
   - name: rdp
     port: 3389
   selector:
-    kubevirt.io/vm: vm-win-server-08
+    kubevirt.io/vm: vm-win-xp
   type: LoadBalancer
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: vm-win-server-08-disk
-  namespace: vm-win-server-08
+  name: vm-win-xp-disk
+  namespace: vm-win-xp
 spec:
   accessModes:
     - ReadWriteMany
@@ -36,14 +34,10 @@ apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
   labels:
-    kubevirt.io/vm: vm-win-server-08
-  name: vm-win-server-08
-  namespace: vm-win-server-08
+    kubevirt.io/vm: vm-win-xp
+  name: vm-win-xp
+  namespace: vm-win-xp
 spec:
-  # Use KubeVirt common instance types and preferences.
-  # These CRDs must exist in the cluster — install via:
-  #   kubectl apply -f https://github.com/kubevirt/common-instancetypes/releases/latest/download/common-clusterinstancetypes-bundle.yaml
-  #   kubectl apply -f https://github.com/kubevirt/common-instancetypes/releases/latest/download/common-clusterpreferences-bundle.yaml
   instancetype:
     kind: VirtualMachineClusterInstancetype
     name: u1.large
@@ -54,28 +48,23 @@ spec:
   dataVolumeTemplates:
   - metadata:
       creationTimestamp: null
-      name: vm-win-server-08-iso
+      name: vm-win-xp-iso
     spec:
       source:
         http:
-          url: http://vm-image-registry.kube-system.svc/vms/win_server_2008_ms-2026-02.iso
-          #url: http://vm-image-registry.kube-system.svc/vms/win_server_2008-2026-02.iso
+          url: http://vm-image-registry.kube-system.svc/vms/win-xp-sp3.iso
       storage:
         accessModes:
           - ReadWriteOnce
-        # - ReadWriteMany
         resources:
           requests:
             storage: 5Gi
         storageClassName: kubev-vms
-        #volumeMode: Filesystem
-  #######
-
   runStrategy: Always
   template:
     metadata:
       labels:
-        kubevirt.io/vm: vm-win-server-08
+        kubevirt.io/vm: vm-win-xp
         kubevirt.io/os: windows
       annotations:
         kubevirt.io/disablePCIHole64: "true"
@@ -90,8 +79,6 @@ spec:
             bios: {}
         machine:
           type: pc
-        # CPU and memory are managed by the instancetype (u1.large = 2 cores, 4Gi RAM).
-        # Features, clock, firmware, and machine type are managed by the preference (windows.10.virtio).
         devices:
           disks:
             - name: osdisk
@@ -117,10 +104,10 @@ spec:
       volumes:
       - name: osdisk
         persistentVolumeClaim:
-          claimName: vm-win-server-08-disk
+          claimName: vm-win-xp-disk
       - name: installiso
         dataVolume:
-          name: vm-win-server-08-iso
+          name: vm-win-xp-iso
       - containerDisk:
           image: quay.io/kubevirt/virtio-container-disk:v1.5.3
         name: virtiocd
