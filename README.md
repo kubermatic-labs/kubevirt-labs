@@ -1,5 +1,7 @@
 # KubeVirt Labs
 
+We presented a talk about Windows on Kubevirt at ContainerDays London 2026, you can [use this link to open the slides](https://docs.google.com/presentation/d/1hGCvJqT55tIRZRPwNfIibjv-Foo_l4GdT0FOTSEsWPM/edit?usp=sharing).
+
 ## Helper
 ```
 #quick select VM name of current ns
