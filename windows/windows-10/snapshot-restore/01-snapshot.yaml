@@ -17,12 +17,14 @@
 apiVersion: snapshot.kubevirt.io/v1beta1
 kind: VirtualMachineSnapshot
 metadata:
-  name: snap-vm-win-10-preset
-  namespace: vm-win-10-preset
+  name: snap-win-10-demo
+  namespace: win10-golden
+  #namespace: vm-windows-10
 spec:
   source:
     apiGroup: kubevirt.io
     kind: VirtualMachine
-    name: vm-win-10-preset
+    name: win10-golden
+    #name: vm-windows-10
   # Time limit for the snapshot to complete. Default is 5m.
   failureDeadline: 10m

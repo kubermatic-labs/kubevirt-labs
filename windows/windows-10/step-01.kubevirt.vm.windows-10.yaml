@@ -21,6 +21,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
+  # Empty Disk
   name: vm-windows-10-disk
   namespace: vm-windows-10
 spec:
@@ -48,17 +49,13 @@ spec:
       source:
         http:
           url: http://vm-image-registry.kube-system.svc/vms/win10-2026-02.iso
-          #url: http://vm-image-registry.kube-system.svc/vms/win10-2026-02-07.iso
       storage:
         accessModes:
           - ReadWriteOnce
-        # - ReadWriteMany
         resources:
           requests:
             storage: 15Gi
         storageClassName: kubev-vms
-        #volumeMode: Filesystem
-  #######
 
   runStrategy: Always
   template:

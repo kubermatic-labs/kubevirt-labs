@@ -17,13 +17,15 @@ apiVersion: snapshot.kubevirt.io/v1beta1
 kind: VirtualMachineRestore
 metadata:
   name: restore-vm-win-10-preset
-  namespace: vm-win-10-preset
+  namespace: win10-golden
+  #namespace: vm-windows-10
 spec:
   target:
     apiGroup: kubevirt.io
     kind: VirtualMachine
-    name: vm-win-10-preset
-  virtualMachineSnapshotName: snap-vm-win-10-preset
+    name: win10-golden
+    #name: vm-windows-10
+  virtualMachineSnapshotName: snap-win-10-demo
   # StopTarget: automatically stop the VM if it is running before restoring.
   targetReadinessPolicy: StopTarget
   # InPlace: restore volumes in-place (overwrites existing data).
