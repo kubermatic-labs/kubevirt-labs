@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KDP KubeVirt - Windows VM as a Service</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #f0f4f8;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    color: #1a2b3c;
+  }
+
+  .slide {
+    width: 1280px;
+    min-height: 720px;
+    background: #ffffff;
+    border-radius: 20px;
+    border: 1px solid #e2e8f0;
+    box-shadow:
+      0 4px 6px -1px rgba(0,0,0,0.06),
+      0 20px 50px -12px rgba(0,0,0,0.1);
+    padding: 48px 56px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Kubermatic teal gradient top bar */
+  .slide::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 4px;
+    background: linear-gradient(90deg, #00C1DE, #0097A7, #7B2FBE, #00C1DE);
+    background-size: 200% 100%;
+    animation: shimmer 4s linear infinite;
+  }
+
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 28px;
+  }
+
+  .header-left {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .title {
+    font-size: 34px;
+    font-weight: 700;
+    color: #0d2b3e;
+    letter-spacing: -0.5px;
+  }
+
+  .subtitle {
+    font-size: 18px;
+    color: #5a7d8f;
+    font-weight: 400;
+  }
+
+  .badges {
+    display: flex;
+    gap: 10px;
+  }
+
+  .badge {
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+  }
+
+  /* Kubermatic teal */
+  .badge-kdp { background: #e6f9fc; color: #00899e; border: 1px solid #b3edf5; }
+  /* KubeVirt blue */
+  .badge-kubevirt { background: #eaf0fb; color: #1a56a6; border: 1px solid #bdd2f0; }
+  /* kro purple (Kubermatic secondary) */
+  .badge-kro { background: #f3ecfb; color: #6b21a8; border: 1px solid #d8bfee; }
+
+  .diagram-container {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #fafbfc;
+    border-radius: 14px;
+    border: 1px solid #e8ecf1;
+    padding: 24px;
+  }
+
+  .mermaid {
+    width: 100%;
+  }
+
+  .footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid #e8ecf1;
+  }
+
+  .legend {
+    display: flex;
+    gap: 24px;
+    align-items: center;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #5a7d8f;
+    font-weight: 500;
+  }
+
+  .legend-line {
+    width: 28px;
+    height: 2px;
+  }
+
+  .legend-line.solid {
+    background: #0097A7;
+    position: relative;
+  }
+  .legend-line.solid::after {
+    content: '';
+    position: absolute;
+    right: -3px; top: -3px;
+    border: 4px solid transparent;
+    border-left: 5px solid #0097A7;
+  }
+  .legend-line.dashed {
+    background: repeating-linear-gradient(90deg, #7B2FBE 0, #7B2FBE 5px, transparent 5px, transparent 9px);
+  }
+
+  .footer-right {
+    font-size: 14px;
+    color: #94a3b8;
+    font-weight: 400;
+  }
+
+  .mermaid svg {
+    max-width: 100%;
+    height: auto;
+  }
+</style>
+</head>
+<body>
+
+<div class="slide">
+  <div class="header">
+    <div class="header-left">
+      <div class="title">Windows VM as a Service</div>
+      <div class="subtitle">Self-service VMs via KDP, synced to KubeVirt with kcp Sync Agent and kro</div>
+    </div>
+    <div class="badges">
+      <span class="badge badge-kdp">KDP</span>
+      <span class="badge badge-kro">kro</span>
+      <span class="badge badge-kubevirt">KubeVirt</span>
+    </div>
+  </div>
+
+  <div class="diagram-container">
+    <pre class="mermaid">
+%%{init: {
+  'theme': 'base',
+  'themeVariables': {
+    'primaryColor': '#e6f9fc',
+    'primaryTextColor': '#0d2b3e',
+    'primaryBorderColor': '#00C1DE',
+    'lineColor': '#0097A7',
+    'secondaryColor': '#f3ecfb',
+    'tertiaryColor': '#ffffff',
+    'fontSize': '18px',
+    'fontFamily': 'Inter, sans-serif',
+    'clusterBkg': 'transparent',
+    'clusterBorder': '#cbd5e1',
+    'edgeLabelBackground': '#ffffff',
+    'nodeTextColor': '#0d2b3e',
+    'mainBkg': '#e6f9fc',
+    'nodeBorder': '#0097A7'
+  }
+}}%%
+flowchart TB
+    subgraph KDP["&#x2601;  KDP / kcp Control Plane"]
+        direction TB
+        user["&#x1F464; Platform User"]
+        api_export["APIExport: kubev-vms"]
+
+        subgraph consumer_ws["&#x1F4E6; Consumer Workspace"]
+            win_example["example.windows.yaml"]
+            vpc_cr["Vpc CR&#10;virtualization.k8c.io/v1alpha1&#10;windows-aas-vpc"]
+            subnet_cr["Subnet CR&#10;virtualization.k8c.io/v1alpha1&#10;windows-private-subnet · 10.0.0.0/24"]
+            vm_cr["WindowsVirtualMachine CR&#10;kubev.k8c.io/v1alpha1&#10;windows-10-golden · 2C/8Gi/20Gi"]
+        end
+
+        user -->|"kubectl apply"| win_example
+        win_example --> vpc_cr
+        win_example --> subnet_cr
+        win_example --> vm_cr
+    end
+
+    subgraph kubev["&#x2699;  KubeVirt Service Provider Cluster"]
+        direction TB
+
+        subgraph sync["&#x1F504; kcp Sync Agent"]
+            direction TB
+            agent["api-syncagent v0.3.0"]
+            pr_vpc["PublishedResource · Vpc"]
+            pr_subnet["PublishedResource · Subnet"]
+            pr_vm["PublishedResource · WindowsVM"]
+            rbac["ClusterRole/Binding"]
+
+            agent --- pr_vpc
+            agent --- pr_subnet
+            agent --- pr_vm
+            agent --- rbac
+        end
+
+        subgraph kro["&#x1F3D7; kro ResourceGraphDefinitions"]
+            rgd_vpc["RGD: vpc.virtualization.k8c.io"]
+            rgd_subnet["RGD: subnet.virtualization.k8c.io"]
+            rgd_vm["RGD: windowsvirtualmachines.kubev.k8c.io"]
+        end
+
+        subgraph kubeovn["&#x1F310; Kube-OVN Network"]
+            ovn_vpc["Vpc · kubeovn.io/v1"]
+            ovn_subnet["Subnet · kubeovn.io/v1"]
+        end
+
+        subgraph kubevirt["&#x1F5A5; KubeVirt VM Resources"]
+            svc["Service · LoadBalancer&#10;RDP :3389 / HTTP :80"]
+            kv_vm["VirtualMachine · kubevirt.io/v1&#10;preference: windows.10.virtio"]
+            vmi["VirtualMachineInstance&#10;read-only status"]
+        end
+
+        kv_vm -->|"spawns"| vmi
+
+        sync ~~~ kro
+        kro ~~~ kubeovn
+        kro ~~~ kubevirt
+    end
+
+    sync -->|"sync"| consumer_ws
+    kro -->|"sync"| sync
+    sync -.->|"watch"| kubeovn
+    sync -.->|"watch"| kubevirt
+    kro -->|"creates"| kubeovn
+    kro -->|"creates"| kubevirt
+
+    style KDP fill:#e6f9fc,stroke:#00C1DE,stroke-width:2px,color:#005f6b
+    style consumer_ws fill:#f0fcff,stroke:#00C1DE,stroke-width:1px,color:#007d8f
+    style kubev fill:#eaf0fb,stroke:#1a56a6,stroke-width:2px,color:#0d3b6e
+    style sync fill:#fff8ed,stroke:#e6920e,stroke-width:1px,color:#8a5600
+    style kro fill:#f3ecfb,stroke:#7B2FBE,stroke-width:1px,color:#5b1d99
+    style kubeovn fill:#edfaf7,stroke:#0097A7,stroke-width:1px,color:#006570
+    style kubevirt fill:#edf2fb,stroke:#2563eb,stroke-width:1px,color:#1a3f7a
+    </pre>
+  </div>
+
+  <div class="footer">
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-line solid"></div>
+        sync / creates
+      </div>
+      <div class="legend-item">
+        <div class="legend-line dashed"></div>
+        watch
+      </div>
+    </div>
+    <div class="footer-right">
+      Kubermatic Developer Platform &middot; KubeVirt &middot; kcp &middot; kro
+    </div>
+  </div>
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    securityLevel: 'loose',
+    flowchart: {
+      curve: 'basis',
+      padding: 20,
+      nodeSpacing: 40,
+      rankSpacing: 50,
+      useMaxWidth: true
+    }
+  });
+</script>
+
+</body>
+</html>
