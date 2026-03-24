@@ -1,0 +1,57 @@
+---
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  # The name of the CRD will be 'compositevms.composition.kubevirt.io'
+  # The API group will be 'composition.kubevirt.io'
+  name: subnet.virtualization.k8c.io
+spec:
+  # 1. Define the schema for the new CompositeVM CRD
+  schema:
+    additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.properties.phase.expression
+      name: Phase
+      type: string
+    - jsonPath: .spec.vmSpec.template.spec.domain.resources.requests.memory
+      name: Memory
+      type: string
+    - jsonPath: .spec.vmSpec.template.spec.domain.cpu.cores
+      name: Cores
+      type: integer
+    - jsonPath: .status.properties.interfaces.expression[0].ipAddress
+      name: IP Adress
+      type: string
+    # The version for the new CRD (e.g., v1alpha1)
+    apiVersion: v1alpha1
+    kind: Subnet
+    group: virtualization.k8c.io
+    spec:
+      cidr: string
+      vpc: string
+      natOutgoing: boolean | default=true
+    status:
+      type: object
+      properties:
+        v4availableIPrange:
+          type: string
+          expression: ${subnet.status.v4availableIPrange}
+
+  # 2. Define the underlying resources
+  resources:
+    # This resource creates the KubeVirt VirtualMachine
+    - id: subnet
+      template:
+        apiVersion: kubeovn.io/v1
+        kind: Subnet
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+        spec:
+          cidrBlock: ${schema.spec.cidr}
+          vpc: ${schema.spec.vpc}
+          natOutgoing: ${schema.spec.natOutgoing}
+          protocol: IPv4
+          gatewayType: distributed

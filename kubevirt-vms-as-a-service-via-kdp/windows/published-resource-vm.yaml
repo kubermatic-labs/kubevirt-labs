@@ -1,0 +1,17 @@
+---
+apiVersion: syncagent.kcp.io/v1alpha1
+kind: PublishedResource
+metadata:
+  name: publish-kubev-windows-vms
+spec:
+  mutation:
+    status:
+    - delete:
+        path: status.conditions
+  naming:
+    name: '{{ .Object.metadata.name }}'
+    namespace: '{{ .ClusterName }}-{{ .Object.metadata.namespace }}'
+  resource:
+    apiGroup: kubev.k8c.io
+    kind: WindowsVirtualMachine
+    version: v1alpha1

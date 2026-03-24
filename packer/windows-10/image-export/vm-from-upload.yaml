@@ -1,0 +1,63 @@
+# VM definition for use after direct upload via upload-to-cluster.sh.
+# The DataVolume and DataSource are already created by the upload script,
+# so this only contains the Service and VirtualMachine.
+apiVersion: v1
+kind: Service
+metadata:
+  name: win10-golden
+  namespace: win10-golden
+spec:
+  ports:
+  - name: rdp
+    port: 3389
+  - name: http
+    port: 80
+  selector:
+    kubevirt.io/vm: win10-golden
+  type: LoadBalancer
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: win10-golden
+  namespace: win10-golden
+  labels:
+    kubevirt.io/vm: win10-golden
+spec:
+  instancetype:
+    kind: VirtualMachineClusterInstancetype
+    name: u1.large
+  preference:
+    kind: VirtualMachineClusterPreference
+    name: windows.10.virtio
+
+  # Reference the PVC created by upload-to-cluster.sh directly
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: win10-golden
+        kubevirt.io/os: windows10
+    spec:
+      dnsConfig:
+        nameservers:
+        - 8.8.8.8
+      dnsPolicy: None
+      domain:
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+            bootOrder: 1
+          interfaces:
+          - name: default
+            masquerade: {}
+      networks:
+      - name: default
+        pod: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: rootdisk
+        persistentVolumeClaim:
+          claimName: windows-10-golden

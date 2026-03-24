@@ -6,13 +6,32 @@ INSTANCE_TYPE ?= u1.large
 PREFERENCE ?= windows.10.virtio
 
 DEMO_NS ?= win10-golden
-
 OUTPUT_DIR ?= ./generated
 
-.PHONY: help setup iso-wait init build all clean status check-prereqs vnc vm-yaml verify verify-stop deploy deploy-status deploy-vnc deploy-destroy generate
+# Image export settings
+REGISTRY_IMAGE ?= quay.io/toschneck/kvirt-disks-windows-10-golden:latest
 
+.PHONY: help
 help: ## Show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "  Build Phase (create the golden image on the build cluster):"
+	@grep -E '^(check-prereqs|setup|iso-wait|init|build|all|clean|status|vnc|vm-yaml):.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "    \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "  Verify Phase (test the golden image boots correctly):"
+	@grep -E '^(verify|verify-stop):.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "    \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "  Export Phase (transfer the golden image to another cluster):"
+	@grep -E '^(image-download|image-upload|image-upload-cluster|image-export):.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "    \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "  Deploy Phase (run VMs from the golden image):"
+	@grep -E '^(deploy|deploy-registry|deploy-upload|deploy-status|deploy-vnc|deploy-destroy|generate):.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "    \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+
+# ---------------------------------------------------------------------------
+# Build Phase: create the golden image on the build cluster
+# ---------------------------------------------------------------------------
+
+.PHONY: check-prereqs setup iso-wait init build all clean status vnc vm-yaml
 
 check-prereqs: ## Verify instance type, preference, and ISO DataVolume exist
 	@echo "=== Checking VirtualMachineClusterInstanceType: $(INSTANCE_TYPE) ==="
@@ -67,6 +86,12 @@ vnc: ## Open VNC console to the build VM
 vm-yaml: ## Dump the full VM spec (for debugging boot order, disks, firmware)
 	kubectl -n $(NAMESPACE) get vm $(VM_NAME) -o yaml
 
+# ---------------------------------------------------------------------------
+# Verify Phase: test the golden image boots correctly
+# ---------------------------------------------------------------------------
+
+.PHONY: verify verify-stop
+
 verify: ## Start the golden image VM and verify it boots
 	@echo "=== Checking golden image DataSource ==="
 	@kubectl -n $(NAMESPACE) get datasource $(VM_NAME) -o jsonpath='{.metadata.name}' 2>/dev/null \
@@ -104,7 +129,30 @@ verify-stop: ## Stop the golden image VM and clean up RDP service
 	virtctl -n $(NAMESPACE) stop $(VM_NAME)
 	kubectl -n $(NAMESPACE) delete -f verify-rdp-service.yaml --ignore-not-found
 
-deploy: ## Deploy a VM from the golden image (DEMO_NS=<name> to override)
+# ---------------------------------------------------------------------------
+# Export Phase: transfer the golden image to a container registry
+# ---------------------------------------------------------------------------
+
+.PHONY: image-download upload-to-oci upload-to-kubev image-export
+
+image-download: ## Download golden image from build cluster to .disks/
+	bash image-export/download-golden-image.sh
+
+upload-to-oci: ## Upload golden image from .disks/ to OCI container registry
+	REGISTRY_IMAGE=$(REGISTRY_IMAGE) bash image-export/upload-to-oci.sh
+
+upload-to-kubev: ## Upload golden image from .disks/ directly to a KubeVirt cluster
+	bash image-export/upload-to-kubev.sh
+
+image-export: image-download upload-to-oci ## Full export: download from cluster + upload to OCI registry
+
+# ---------------------------------------------------------------------------
+# Deploy Phase: run VMs from the golden image
+# ---------------------------------------------------------------------------
+
+.PHONY: deploy deploy-registry deploy-upload deploy-status deploy-vnc deploy-destroy generate
+
+deploy: ## Deploy a VM cloned from the on-cluster golden image (DEMO_NS=<name>)
 	sed 's/win10-demo/$(DEMO_NS)/g' vm-from-golden-image.yaml | kubectl apply -f -
 	@echo ""
 	@echo "Waiting for VM to be ready..."
@@ -116,6 +164,27 @@ deploy: ## Deploy a VM from the golden image (DEMO_NS=<name> to override)
 	@echo "Connect via VNC:   make deploy-vnc"
 	@echo "Check status:      make deploy-status"
 	@echo "Destroy:           make deploy-destroy"
+
+deploy-upload: ## Deploy a VM after direct upload (DST_KUBECONFIG required)
+	kubectl --kubeconfig=$(DST_KUBECONFIG) apply -f image-export/vm-from-upload.yaml
+	@echo ""
+	@echo "Waiting for VM to be ready..."
+	kubectl --kubeconfig=$(DST_KUBECONFIG) -n $(DEMO_NS) wait --for=condition=Ready vmi/win10-golden --timeout=10m
+	@echo ""
+	@echo "=== VM is running! ==="
+	kubectl --kubeconfig=$(DST_KUBECONFIG) -n $(DEMO_NS) get vmi
+
+deploy-registry: ## Deploy a VM from the registry image (for clusters without the golden image)
+	kubectl apply -f image-export/vm-from-registry-image.yaml
+	@echo ""
+	@echo "Waiting for DataVolume import..."
+	kubectl -n $(DEMO_NS) wait --for=condition=Ready dv/windows-10-golden --timeout=30m
+	@echo ""
+	@echo "Waiting for VM to be ready..."
+	kubectl -n $(DEMO_NS) wait --for=condition=Ready vmi/$(DEMO_NS) --timeout=10m
+	@echo ""
+	@echo "=== VM is running! ==="
+	kubectl -n $(DEMO_NS) get vmi
 
 deploy-status: ## Show status of the deployed demo VM
 	@echo "=== VirtualMachine ==="

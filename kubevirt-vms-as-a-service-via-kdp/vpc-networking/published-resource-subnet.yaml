@@ -1,0 +1,13 @@
+---
+apiVersion: syncagent.kcp.io/v1alpha1
+kind: PublishedResource
+metadata:
+  name: publish-kubev-subnets
+spec:
+   resource:
+     kind: Subnet
+     apiGroup: virtualization.k8c.io
+     version: "v1alpha1"
+   naming:
+     namespace: '{{ .ClusterName }}-{{ .Object.metadata.namespace }}'
+     name: '{{ .Object.metadata.name }}'

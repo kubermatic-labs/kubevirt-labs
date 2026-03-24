@@ -1,0 +1,10 @@
+# Required: the name of the APIExport in kcp that this Sync Agent is supposed to serve.
+apiExportName: kubev-vms
+
+kcpKubeconfig: kcp-kubeconfig
+
+replicas: 1
+
+image:
+  repository: "ghcr.io/kcp-dev/api-syncagent"
+  tag: "v0.3.0"

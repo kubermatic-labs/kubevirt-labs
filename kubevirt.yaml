@@ -1,0 +1,28 @@
+#Reference KubeVirt settings for the examples
+apiVersion: kubevirt.io/v1
+kind: KubeVirt
+metadata:
+  annotations:
+    kubevirt.io/latest-observed-api-version: v1
+    kubevirt.io/storage-observed-api-version: v1
+  name: kubevirt
+  namespace: kubevirt
+spec:
+  configuration:
+    developerConfiguration:
+      featureGates:
+      - VMExport
+      - HotplugVolumes
+      - BlockVolume
+      - CPUManager
+        #- CPUNodeDiscovery default feature
+      - DataVolumes
+      - ExpandDisks
+      - ExperimentalIgnitionSupport  # Flatcar Ignition support
+        #- LiveMigration default feature
+      - Sidecar
+      - Snapshot                     # VM Export / Snapshot Support https://kubevirt.io/user-guide/storage/snapshot_restore_api/
+      - VMPersistentState            # Windows VM UEFI state persistence
+    migrations:
+      parallelMigrationsPerCluster: 10
+      parallelOutboundMigrationsPerNode: 5

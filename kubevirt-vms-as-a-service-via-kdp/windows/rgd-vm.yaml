@@ -1,0 +1,214 @@
+---
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: windowsvirtualmachines.kubev.k8c.io
+spec:
+  schema:
+    additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.properties.phase.expression
+      name: Phase
+      type: string
+    - jsonPath: .spec.memory
+      name: Memory
+      type: string
+    - jsonPath: .spec.cpu
+      name: Cores
+      type: integer
+    - jsonPath: .status.properties.interfaces.expression[0].ipAddress
+      name: IP Address
+      type: string
+    - jsonPath: .spec.diskSize
+      name: Disk Size
+      type: string
+    - jsonPath: .status.properties.loadBalancerIP.expression
+      name: LB IP
+      type: string
+    - jsonPath: .status.properties.port.expression
+      name: Port
+      type: integer
+    - jsonPath: .status.properties.nodePort.expression
+      name: NodePort
+      type: integer
+    apiVersion: v1alpha1
+    kind: WindowsVirtualMachine
+    group: kubev.k8c.io
+    spec:
+      instanceType: string
+      diskSize: string
+      templateImageName: string
+      subnet: string
+      vpc: string
+    status:
+      type: object
+      properties:
+        interfaces:
+          type: array
+          expression: ${vmi.status.interfaces}
+          x-kubernetes-preserve-unknown-fields: true
+        currentCPUTopology:
+          type: object
+          expression: ${vmi.status.currentCPUTopology}
+          x-kubernetes-preserve-unknown-fields: true
+        guestOSInfo:
+          type: object
+          expression: ${vmi.status.guestOSInfo}
+          x-kubernetes-preserve-unknown-fields: true
+        machine:
+          type: object
+          expression: ${vmi.status.machine}
+          x-kubernetes-preserve-unknown-fields: true
+        migrationMethod:
+          type: string
+          expression: ${vmi.status.migrationMethod}
+        migrationTransport:
+          type: string
+          expression: ${vmi.status.migrationTransport}
+        phase:
+          type: string
+          expression: ${vmi.status.phase}
+        volumeStatus:
+          type: array
+          expression: ${vmi.status.volumeStatus}
+          x-kubernetes-preserve-unknown-fields: true
+        loadBalancerIP:
+          type: string
+          expression: ${svcStatus.status.loadBalancer.ingress[0].ip}
+        port:
+          type: string
+          expression: ${svcStatus.spec.ports[0].port}
+        nodePort:
+          type: string
+          expression: ${svcStatus.spec.ports[0].nodePort}
+
+  resources:
+    # Service for RDP and HTTP access
+    - id: svc
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+        spec:
+          ports:
+          - name: rdp
+            port: 3389
+          selector:
+            kubevirt.io/vm: ${schema.metadata.name}
+          type: LoadBalancer
+
+    - id: clusterrole
+      template:
+        # RBAC: Allow the default SA in win10-golden to clone DataVolumes from vm-images
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRole
+        metadata:
+          name: cdi-clone-${schema.metadata.name}
+        rules:
+          - apiGroups: [ "cdi.kubevirt.io" ]
+            resources: [ "datavolumes/source" ]
+            verbs: [ "create" ]
+    - id: clusterrolebinding
+      template:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        metadata:
+          name: cdi-clone-${schema.metadata.name}
+          namespace: build-vm-win10
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: ClusterRole
+          name: cdi-clone-${schema.metadata.name}
+        subjects:
+          - kind: ServiceAccount
+            name: default
+            namespace: ${schema.metadata.namespace}
+    # Windows VirtualMachine using a pre-uploaded golden image PVC
+    - id: vm
+      template:
+        apiVersion: kubevirt.io/v1
+        kind: VirtualMachine
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+          labels:
+            kubevirt.io/vm: ${schema.metadata.name}
+        spec:
+          instancetype:
+            kind: VirtualMachineClusterInstancetype
+            name: ${schema.spec.instanceType} #u1.large
+          preference:
+            kind: VirtualMachineClusterPreference
+            name: windows.10.virtio
+          # Clone the golden image into a new disk for this VM
+          dataVolumeTemplates:
+            - metadata:
+                name: winvm-disk-${schema.metadata.name}
+              spec:
+                sourceRef:
+                  kind: DataSource
+                  name: ${schema.spec.templateImageName} #windows-10-golden
+                  namespace: build-vm-win10
+                storage:
+                  accessModes:
+                    - ReadWriteMany
+                  resources:
+                    requests:
+                      storage: ${schema.spec.diskSize} #50Gi
+                  storageClassName: kubev-vms
+          runStrategy: Always
+          template:
+            metadata:
+              labels:
+                kubevirt.io/vm: ${schema.metadata.name}
+                kubevirt.io/os: windows10
+              annotations:
+                ovn.kubernetes.io/logical_router: ${schema.spec.vpc}-${schema.metadata.labels['syncagent.kcp.io/remote-object-cluster']}
+                ovn.kubernetes.io/logical_switch: ${schema.spec.subnet}-${schema.metadata.labels['syncagent.kcp.io/remote-object-cluster']}
+            spec:
+              dnsConfig:
+                nameservers:
+                - 8.8.8.8
+              dnsPolicy: None
+              domain:
+                devices:
+                  disks:
+                  - name: rootdisk
+                    disk:
+                      bus: virtio
+                    bootOrder: 1
+                  interfaces:
+                  - name: default
+                    masquerade: {}
+              networks:
+              - name: default
+                pod: {}
+              terminationGracePeriodSeconds: 30
+              volumes:
+              - name: rootdisk
+                persistentVolumeClaim:
+                  claimName: winvm-disk-${schema.metadata.name}
+
+    # Read-only resource to get port/nodePort from the Service
+    - id: svcStatus
+      externalRef:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+
+    # Read-only resource to get status from the VirtualMachineInstance
+    - id: vmi
+      #readyWhen:
+      # - vm.status.ready
+      externalRef:
+        apiVersion: kubevirt.io/v1
+        kind: VirtualMachineInstance
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}

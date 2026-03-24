@@ -1,0 +1,82 @@
+
+# DataVolume: imports the golden disk image from the OCI registry.
+# CDI auto-detects and decompresses gzip-compressed images.
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: windows-10-golden
+
+spec:
+  source:
+    registry:
+      url: "docker://quay.io/toschneck/kvirt-disks-windows-10-golden:latest"
+      # If the registry is private, create a pull secret and uncomment:
+      # FORMAT see https://github.com/kubevirt/containerized-data-importer/blob/main/manifests/example/endpoint-secret.yaml
+      secretRef: toschneck-kubev-demo-tobi-pull-secret
+  storage:
+    accessModes:
+      - ReadWriteMany
+    resources:
+      requests:
+        storage: 50Gi
+    # storageClassName: kubev-vms
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: win10-golden
+
+spec:
+  ports:
+  - name: rdp
+    port: 3389
+  - name: http
+    port: 80
+  selector:
+    kubevirt.io/vm: win10-golden
+  type: LoadBalancer
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: win10-golden
+
+  labels:
+    kubevirt.io/vm: win10-golden
+spec:
+  instancetype:
+    kind: VirtualMachineClusterInstancetype
+    name: u1.large
+  preference:
+    kind: VirtualMachineClusterPreference
+    name: windows.10.virtio
+
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: win10-golden
+        kubevirt.io/os: windows10
+    spec:
+      dnsConfig:
+        nameservers:
+        - 8.8.8.8
+      dnsPolicy: None
+      domain:
+        devices:
+          disks:
+          - name: rootdisk
+            disk:
+              bus: virtio
+            bootOrder: 1
+          interfaces:
+          - name: default
+            masquerade: {}
+      networks:
+      - name: default
+        pod: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: rootdisk
+        dataVolume:
+          name: windows-10-golden

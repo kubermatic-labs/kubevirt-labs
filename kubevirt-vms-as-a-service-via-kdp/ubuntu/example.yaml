@@ -1,0 +1,35 @@
+---
+kind: Vpc
+apiVersion: virtualization.k8c.io/v1alpha1
+metadata:
+  name: ubuntu-vm
+  annotations:
+    ovn.kubernetes.io/vpc_lb: "off"
+spec:
+  externalSubnet: ovn-default
+  enableBfd: true
+  staticRoutes: []
+  vpcPeerings: []
+
+---
+kind: Subnet
+apiVersion: virtualization.k8c.io/v1alpha1
+metadata:
+  name: ubuntu-vm-subnet
+spec:
+  cidr: 10.0.0.0/24
+  vpc: ubuntu-vm
+  natOutgoing: true
+
+---
+kind: VirtualMachine
+apiVersion: kubev.k8c.io/v1alpha1
+metadata:
+  name: ubuntu-kcp-vm
+  namespace: dev
+spec:
+  cpu: 2
+  memory: 4Gi
+  diskSize: 20Gi
+  subnet: ubuntu-vm-subnet
+  vpc: ubuntu-vm

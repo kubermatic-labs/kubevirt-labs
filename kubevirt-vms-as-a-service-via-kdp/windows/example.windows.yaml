@@ -1,0 +1,35 @@
+---
+kind: Vpc
+apiVersion: virtualization.k8c.io/v1alpha1
+metadata:
+  name: windows-aas-vpc
+  annotations:
+    ovn.kubernetes.io/vpc_lb: "off"
+spec:
+  externalSubnet: ovn-default
+  enableBfd: true
+  staticRoutes: []
+  vpcPeerings: []
+
+---
+kind: Subnet
+apiVersion: virtualization.k8c.io/v1alpha1
+metadata:
+  name: windows-private-subnet
+spec:
+  cidr: 10.0.0.0/24
+  vpc: windows-aas-vpc
+  natOutgoing: true
+
+---
+kind: WindowsVirtualMachine
+apiVersion: kubev.k8c.io/v1alpha1
+metadata:
+  name: windows-10-golden
+  namespace: windows-aas
+spec:
+  instanceType: u1.large
+  diskSize: 50Gi
+  templateImageName: windows-10-golden
+  subnet: windows-private-subnet
+  vpc: windows-aas-vpc

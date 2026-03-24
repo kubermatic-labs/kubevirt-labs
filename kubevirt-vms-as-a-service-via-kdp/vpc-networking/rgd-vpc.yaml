@@ -1,0 +1,73 @@
+---
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  # The name of the CRD will be 'compositevms.composition.kubevirt.io'
+  # The API group will be 'composition.kubevirt.io'
+  name: vpc.virtualization.k8c.io
+spec:
+  # 1. Define the schema for the new CompositeVM CRD
+  schema:
+    additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .spec.enableBfd
+      name: enableBfd
+      type: boolean
+    - jsonPath: .spec.enableExternal
+      name: enableExternal
+      type: boolean
+
+    # The version for the new CRD (e.g., v1alpha1)
+    apiVersion: v1alpha1
+    kind: Vpc
+    group: virtualization.k8c.io
+    types:
+      staticRoutes:
+        cidr: string
+        nextHopIP: string
+        policy: string
+      vpcPeerings:
+        remoteVpc: string
+        localConnectIP: string
+    spec:
+      staticRoutes: "[]staticRoutes"
+      vpcPeerings: "[]vpcPeerings"
+      externalSubnet: string | default=external
+      enableBfd: boolean | default=false
+    status:
+      type: object
+      properties:
+        router:
+          type: string
+          expression: ${vpc.status.router}
+        enableExternal:
+          type: boolean
+          expression: ${vpc.status.enableExternal}
+        bfdPort:
+          type: object
+          expression: ${vpc.status.bfdPort}
+          x-kubernetes-preserve-unknown-fields: true
+
+  # 2. Define the underlying resources
+  resources:
+    # This resource creates the KubeVirt VirtualMachine
+    - id: vpc
+      template:
+        apiVersion: kubeovn.io/v1
+        kind: Vpc
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+        spec:
+          enableExternal: true
+          extraExternalSubnets:
+          - ${schema.spec.externalSubnet}
+          enableBfd: ${schema.spec.enableBfd}
+          bfdPort:
+            enabled: ${schema.spec.enableBfd}
+            ip: 10.255.255.255
+          vpcPeerings: ${schema.spec.vpcPeerings}
+          staticRoutes: ${schema.spec.staticRoutes}
+          policyRoutes: []

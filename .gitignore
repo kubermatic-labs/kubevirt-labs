@@ -1,1 +1,4 @@
+.local/
 .disks/
+*.img.gz
+*.img

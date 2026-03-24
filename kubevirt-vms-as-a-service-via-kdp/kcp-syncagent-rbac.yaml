@@ -1,0 +1,56 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: 'api-syncagent:kubev'
+rules:
+  - apiGroups:
+    - ""
+    resources:
+    - namespaces
+    verbs:
+    - get 
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - secrets
+    verbs:
+    - get 
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+  - apiGroups:
+      - virtualization.k8c.io
+      - kubev.k8c.io
+    resources:
+      - virtualmachines
+      - vpcs
+      - subnets
+      - windowsvirtualmachines
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - delete
+      - patch
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: 'api-syncagent:kubev'
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: 'api-syncagent:kubev'
+subjects:
+  - kind: ServiceAccount
+    name: 'kcp-api-syncagent'
+    namespace: kcp-system

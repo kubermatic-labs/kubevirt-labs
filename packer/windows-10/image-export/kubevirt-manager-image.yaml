@@ -1,0 +1,19 @@
+# Image resource for the kubevirt-manager dashboard UI.
+# Makes the Windows 10 golden image visible at /images in the UI
+# and selectable when creating VMs.
+#
+# Apply to any cluster running the kubevirt-manager dashboard:
+#   kubectl apply -f kubevirt-manager-image.yaml
+apiVersion: kubevirt-manager.io/v1
+kind: Image
+metadata:
+  name: windows-10-golden
+  namespace: win10-golden
+  labels:
+    kubevirt-manager.io/managed: "true"
+spec:
+  type: registry
+  readableName: "Windows 10 Golden Image"
+  readableDescription: "Sysprepped Windows 10 golden image built with Packer. Includes VirtIO drivers, IIS demo, and RDP enabled. User: root / Password: toor"
+  registry:
+    url: "docker://quay.io/toschneck/kvirt-disks-windows-10-golden:latest"
