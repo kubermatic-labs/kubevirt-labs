@@ -1,0 +1,79 @@
+%%{init: {
+  'theme': 'base',
+  'themeVariables': {
+    'primaryColor': '#e6f9fc',
+    'primaryTextColor': '#0d2b3e',
+    'primaryBorderColor': '#00C1DE',
+    'lineColor': '#0097A7',
+    'secondaryColor': '#f3ecfb',
+    'tertiaryColor': '#ffffff',
+    'fontSize': '18px',
+    'fontFamily': 'Inter, sans-serif',
+    'clusterBkg': 'transparent',
+    'clusterBorder': '#cbd5e1',
+    'edgeLabelBackground': '#ffffff',
+    'nodeTextColor': '#0d2b3e',
+    'mainBkg': '#e6f9fc',
+    'nodeBorder': '#0097A7'
+  }
+}}%%
+flowchart TB
+    subgraph KDP["☁  KDP / kcp Control Plane"]
+        direction TB
+        user["👤 Platform User"]
+
+        subgraph consumer_ws["📦 Consumer Workspace"]
+            win_example["example.windows.yaml"]
+            vpc_cr["Vpc CR"]
+            subnet_cr["Subnet CR"]
+            vm_cr["WindowsVirtualMachine CR"]
+        end
+
+        user -->|"kubectl apply"| win_example
+        win_example --> vpc_cr
+        win_example --> subnet_cr
+        win_example --> vm_cr
+    end
+
+    subgraph kubev["⚙  KubeVirt Service Provider Cluster"]
+        direction TB
+
+        sync["🔄 kcp Sync Agent"]
+
+        subgraph kro["🏗 kro ResourceGraphDefinitions"]
+            direction TB
+            rgd_vpc["RGD: vpc.virtualization.k8c.io"]
+            rgd_subnet["RGD: subnet.virtualization.k8c.io"]
+            rgd_vm["RGD: windowsvirtualmachines.kubev.k8c.io"]
+        end
+
+        subgraph kubeovn["🌐 Kube-OVN Network"]
+            ovn_vpc["Vpc · kubeovn.io/v1"]
+            ovn_subnet["Subnet · kubeovn.io/v1"]
+        end
+
+        subgraph kubevirt["🖥 KubeVirt VM Resources"]
+            svc["Service · LoadBalancer
+RDP :3389 / HTTP :80"]
+            kv_vm["VirtualMachine"]
+        end
+
+        sync ~~~ kro
+        kro ~~~ kubeovn
+        kro ~~~ kubevirt
+    end
+
+    sync <-->|"sync"| consumer_ws
+    kro -->|"sync"| sync
+    sync -.->|"watch"| kubeovn
+    sync -.->|"watch"| kubevirt
+    kro -->|"creates"| kubeovn
+    kro -->|"creates"| kubevirt
+
+    style KDP fill:#e6f9fc,stroke:#00C1DE,stroke-width:2px,color:#005f6b
+    style consumer_ws fill:#f0fcff,stroke:#00C1DE,stroke-width:1px,color:#007d8f
+    style kubev fill:#eaf0fb,stroke:#1a56a6,stroke-width:2px,color:#0d3b6e
+    style sync fill:#fff8ed,stroke:#e6920e,stroke-width:1px,color:#8a5600
+    style kro fill:#f3ecfb,stroke:#7B2FBE,stroke-width:1px,color:#5b1d99
+    style kubeovn fill:#edfaf7,stroke:#0097A7,stroke-width:1px,color:#006570
+    style kubevirt fill:#edf2fb,stroke:#2563eb,stroke-width:1px,color:#1a3f7a
