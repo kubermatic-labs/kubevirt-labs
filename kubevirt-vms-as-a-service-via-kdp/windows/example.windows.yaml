@@ -17,7 +17,7 @@ apiVersion: virtualization.k8c.io/v1alpha1
 metadata:
   name: windows-ass-subnet
 spec:
-  cidr: 10.0.0.0/24
+  cidr: 10.44.0.0/24
   vpc: windows-aas-vpc
   natOutgoing: true
 
