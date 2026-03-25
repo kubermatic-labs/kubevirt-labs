@@ -15,7 +15,7 @@ spec:
 kind: Subnet
 apiVersion: virtualization.k8c.io/v1alpha1
 metadata:
-  name: windows-private-subnet
+  name: windows-ass-subnet
 spec:
   cidr: 10.0.0.0/24
   vpc: windows-aas-vpc
@@ -31,5 +31,5 @@ spec:
   instanceType: u1.large
   diskSize: 50Gi
   templateImageName: windows-10-golden
-  subnet: windows-private-subnet
+  subnet: windows-ass-subnet
   vpc: windows-aas-vpc
