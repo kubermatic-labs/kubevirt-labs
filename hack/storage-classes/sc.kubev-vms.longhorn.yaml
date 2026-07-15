@@ -1,0 +1,23 @@
+allowVolumeExpansion: true
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: kubev-vms
+parameters:
+  backupTargetName: default
+  dataEngine: v1
+  dataLocality: disabled
+  disableRevisionCounter: "true"
+  fromBackup: ""
+  fsType: ext4
+  # Required for RWX + Block volumes used by KubeVirt VM disks / CDI imports.
+  # Without this, Longhorn serves RWX volumes over NFS (share-manager), which
+  # cannot expose a raw block device, so CDI importer pods hang in
+  # ContainerCreating with "MapPodDevice failed ... special device ... does not exist".
+  migratable: "true"
+  numberOfReplicas: "3"
+  staleReplicaTimeout: "30"
+  unmapMarkSnapChainRemoved: ignored
+provisioner: driver.longhorn.io
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
