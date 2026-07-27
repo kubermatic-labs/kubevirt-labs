@@ -3,7 +3,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: demo-vm-ingress
-  namespace: vm-demo
+  namespace: kubermatic-virtualization
   annotations:
     # 1. Annotation to specify the ClusterIssuer for cert-manager
     cert-manager.io/cluster-issuer: "letsencrypt-prod"

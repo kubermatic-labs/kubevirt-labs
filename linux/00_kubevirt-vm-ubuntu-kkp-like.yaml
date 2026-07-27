@@ -7,7 +7,7 @@
 #kind: VirtualMachineInstancetype
 #metadata:
 #  name: standard-2
-#  namespace: vm-demo
+#  namespace: kubermatic-virtualization
 #spec:
 #  cpu:
 #    guest: 2
@@ -17,7 +17,7 @@
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
-  namespace: vm-demo
+  namespace: kubermatic-virtualization
   labels:
     kubevirt.io/vm: vm-ubuntu-22
   name: vm-ubuntu-22

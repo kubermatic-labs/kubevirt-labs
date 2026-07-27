@@ -3,7 +3,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: demo-vm
-  namespace: vm-demo
+  namespace: kubermatic-virtualization
 spec:
   selector:
     kubevirt.io/vm: vm-ubuntu-22
