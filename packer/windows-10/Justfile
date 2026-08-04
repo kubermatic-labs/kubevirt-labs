@@ -1,0 +1,252 @@
+# Windows 10 golden image: build, verify, export, and deploy.
+# Run `just` (or `just --list`) to see all recipes grouped by phase.
+
+set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+
+# Build phase: the ONE build/source namespace (also fills __TODO_BUILD_NAMESPACE__ on deploy)
+build_namespace := "build-vm-win10"
+golden_vm_name  := "windows-10-golden"                                       # build/golden VM + DataSource name
+iso_dv_name     := "windows-10-x86-64-iso"
+timeout         := "10m"
+instance_type   := "u1.large"
+preference      := "windows.10.virtio"
+
+# Deploy phase
+demo_vm_name    := "win10-demo"                                              # FIXED VM/Service name (namespace varies)
+output_dir      := "./generated"
+registry_image  := "quay.io/toschneck/kvirt-disks-windows-10-golden:latest"
+
+# Show all recipes grouped by phase
+_default:
+    @just --list
+
+# private: render vm-from-golden-image.yaml for a runtime namespace to stdout
+_render namespace:
+    @sed -e 's/__TODO_NAMESPACE__/{{namespace}}/g' \
+         -e 's/__TODO_BUILD_NAMESPACE__/{{build_namespace}}/g' \
+         vm-from-golden-image.yaml
+
+# ---------------------------------------------------------------------------
+# Build phase: create the golden image on the build cluster
+# ---------------------------------------------------------------------------
+
+# Verify instance type, preference, and ISO DataVolume exist
+[group('build')]
+check-prereqs:
+    @echo "=== Checking VirtualMachineClusterInstancetype: {{instance_type}} ==="
+    @kubectl get virtualmachineclusterinstancetype {{instance_type}} -o name 2>/dev/null || (echo "ERROR: Instance type '{{instance_type}}' not found. Run: kubectl get virtualmachineclusterinstancetype" && false)
+    @echo ""
+    @echo "=== Checking VirtualMachineClusterPreference: {{preference}} ==="
+    @kubectl get virtualmachineclusterpreference {{preference}} -o name 2>/dev/null || (echo "ERROR: Preference '{{preference}}' not found. Run: kubectl get virtualmachineclusterpreference | grep -i windows" && false)
+    @echo ""
+    @echo "=== Checking ISO DataVolume: {{iso_dv_name}} ==="
+    @kubectl -n {{build_namespace}} get dv {{iso_dv_name}} -o jsonpath='{.status.phase}' 2>/dev/null || (echo "ERROR: ISO DataVolume not found. Run: just setup" && false)
+    @echo ""
+    @echo "All prerequisites OK."
+
+# Create the build namespace and apply the ISO DataVolume
+[group('build')]
+setup:
+    kubectl create namespace {{build_namespace}} --dry-run=client -o yaml | kubectl apply -f -
+    kubectl apply -n {{build_namespace}} -f iso-datavolume.yaml
+
+# Wait for the ISO DataVolume to be ready
+[group('build')]
+iso-wait:
+    kubectl -n {{build_namespace}} wait --for=condition=Ready dv/{{iso_dv_name}} --timeout={{timeout}}
+
+# Initialize Packer plugins
+[group('build')]
+init:
+    packer init windows-10.pkr.hcl
+
+# Run the Packer build (with verbose logging)
+[group('build')]
+build:
+    PACKER_LOG=1 packer build windows-10.pkr.hcl
+
+# Full pipeline: setup + wait + init + check + build
+[group('build')]
+all: setup iso-wait init check-prereqs build
+
+# Delete the ISO DataVolume and the build namespace
+[group('build')]
+[confirm("Delete the ISO DataVolume and build namespace? (y/n)")]
+clean:
+    kubectl delete -n {{build_namespace}} dv/{{iso_dv_name}} --ignore-not-found
+    kubectl delete namespace {{build_namespace}} --ignore-not-found
+
+# Show DataVolume, VM, and Pod status in the build namespace
+[group('build')]
+status:
+    @echo "=== DataVolumes ==="
+    kubectl -n {{build_namespace}} get dv
+    @echo ""
+    @echo "=== VirtualMachines ==="
+    kubectl -n {{build_namespace}} get vm
+    @echo ""
+    @echo "=== VirtualMachineInstances ==="
+    kubectl -n {{build_namespace}} get vmi
+    @echo ""
+    @echo "=== Pods ==="
+    kubectl -n {{build_namespace}} get pods
+
+# Open VNC console to the build VM
+[group('build')]
+vnc:
+    virtctl vnc -n {{build_namespace}} {{golden_vm_name}}
+
+# Dump the full VM spec (for debugging boot order, disks, firmware)
+[group('build')]
+vm-yaml:
+    kubectl -n {{build_namespace}} get vm {{golden_vm_name}} -o yaml
+
+# ---------------------------------------------------------------------------
+# Verify phase: test the golden image boots correctly
+# ---------------------------------------------------------------------------
+
+# Start the golden image VM and verify it boots (exposes RDP)
+[group('verify')]
+verify:
+    @echo "=== Checking golden image DataSource ==="
+    @kubectl -n {{build_namespace}} get datasource {{golden_vm_name}} -o jsonpath='{.metadata.name}' 2>/dev/null && echo " OK" || (echo "ERROR: DataSource '{{golden_vm_name}}' not found. Run: just build" && false)
+    @echo ""
+    @echo "=== Checking golden image DataVolume ==="
+    @kubectl -n {{build_namespace}} get dv {{golden_vm_name}} -o jsonpath='Phase: {.status.phase}{"\n"}' 2>/dev/null || (echo "ERROR: DataVolume '{{golden_vm_name}}' not found." && false)
+    @echo ""
+    @echo "=== Ensuring sysprep ConfigMap exists (Packer build leftover, needs unattend.xml key) ==="
+    kubectl -n {{build_namespace}} create configmap {{golden_vm_name}} --from-literal='unattend.xml=<?xml version="1.0" encoding="utf-8"?><unattend xmlns="urn:schemas-microsoft-com:unattend"/>' --dry-run=client -o yaml | kubectl apply -f -
+    @echo ""
+    @echo "=== Creating RDP Service ==="
+    kubectl apply -n {{build_namespace}} -f verify-rdp-service.yaml
+    @echo ""
+    @echo "=== Starting golden image VM ==="
+    virtctl -n {{build_namespace}} start {{golden_vm_name}} || true
+    @echo "Waiting for VMI to be ready..."
+    kubectl -n {{build_namespace}} wait --for=condition=Ready vmi/{{golden_vm_name}} --timeout=5m
+    @echo ""
+    @echo "=== VM is running! ==="
+    kubectl -n {{build_namespace}} get vmi {{golden_vm_name}}
+    @echo ""
+    @echo "=== RDP Service ==="
+    kubectl -n {{build_namespace}} get svc {{golden_vm_name}}-rdp
+    @echo ""
+    @echo "Connect via VNC:  just vnc"
+    @echo "Connect via RDP:  kubectl -n {{build_namespace}} get svc {{golden_vm_name}}-rdp"
+    @echo "Stop after test:  just verify-stop"
+
+# Stop the golden image VM and remove the RDP service
+[group('verify')]
+verify-stop:
+    virtctl -n {{build_namespace}} stop {{golden_vm_name}}
+    kubectl -n {{build_namespace}} delete -f verify-rdp-service.yaml --ignore-not-found
+
+# ---------------------------------------------------------------------------
+# Export phase: transfer the golden image to another cluster
+# ---------------------------------------------------------------------------
+
+# Download the golden image from the build cluster to .disks/
+[group('export')]
+image-download:
+    bash image-export/download-golden-image.sh
+
+# Upload the golden image from .disks/ to the OCI container registry
+[group('export')]
+upload-to-oci:
+    REGISTRY_IMAGE={{registry_image}} bash image-export/upload-to-oci.sh
+
+# Upload the golden image from .disks/ directly to a KubeVirt cluster
+[group('export')]
+upload-to-kubev:
+    bash image-export/upload-to-kubev.sh
+
+# Full export: download from the cluster + upload to the OCI registry
+[group('export')]
+image-export: image-download upload-to-oci
+
+# ---------------------------------------------------------------------------
+# Deploy phase: run VMs from the golden image
+# ---------------------------------------------------------------------------
+
+# Deploy a VM cloned from the on-cluster golden image into <namespace>
+[group('deploy')]
+deploy namespace:
+    just --set build_namespace {{build_namespace}} _render {{namespace}} | kubectl apply -f -
+    @echo ""
+    @echo "Waiting for the golden-image clone (DataVolume) to finish..."
+    kubectl -n {{namespace}} wait --for=condition=Ready dv/{{demo_vm_name}}-disk --timeout=30m
+    @echo "Waiting for the VM to boot (VMI is created only after the clone)..."
+    kubectl -n {{namespace}} wait --for=create vmi/{{demo_vm_name}} --timeout=5m
+    kubectl -n {{namespace}} wait --for=condition=Ready vmi/{{demo_vm_name}} --timeout={{timeout}}
+    @echo ""
+    @echo "=== VM is running! ==="
+    kubectl -n {{namespace}} get vmi {{demo_vm_name}}
+    @echo ""
+    @echo "Connect via VNC:   just deploy-vnc {{namespace}}"
+    @echo "Check status:      just deploy-status {{namespace}}"
+    @echo "Destroy:           just deploy-destroy {{namespace}}"
+
+# Deploy a VM from the OCI registry image into <namespace> (for clusters without the golden image)
+[group('deploy')]
+deploy-registry namespace:
+    kubectl create namespace {{namespace}} --dry-run=client -o yaml | kubectl apply -f -
+    kubectl apply -n {{namespace}} -f image-export/vm-from-registry-image.yaml
+    @echo ""
+    @echo "Waiting for DataVolume import..."
+    kubectl -n {{namespace}} wait --for=condition=Ready dv/windows-10-golden --timeout=30m
+    @echo ""
+    @echo "Waiting for VM to be ready..."
+    kubectl -n {{namespace}} wait --for=condition=Ready vmi/win10-golden --timeout=10m
+    @echo ""
+    @echo "=== VM is running! ==="
+    kubectl -n {{namespace}} get vmi
+
+# Deploy a VM after a direct upload (DST_KUBECONFIG env var, or pass a path)
+[group('deploy')]
+deploy-upload dst_kubeconfig=env_var_or_default("DST_KUBECONFIG", ""):
+    kubectl --kubeconfig={{dst_kubeconfig}} apply -f image-export/vm-from-upload.yaml
+    @echo ""
+    @echo "Waiting for VM to be ready..."
+    kubectl --kubeconfig={{dst_kubeconfig}} -n win10-golden wait --for=condition=Ready vmi/win10-golden --timeout=10m
+    @echo ""
+    @echo "=== VM is running! ==="
+    kubectl --kubeconfig={{dst_kubeconfig}} -n win10-golden get vmi
+
+# Show status of the deployed VM in <namespace>
+[group('deploy')]
+deploy-status namespace:
+    @echo "=== VirtualMachine ==="
+    kubectl -n {{namespace}} get vm {{demo_vm_name}}
+    @echo ""
+    @echo "=== VirtualMachineInstance ==="
+    kubectl -n {{namespace}} get vmi {{demo_vm_name}}
+    @echo ""
+    @echo "=== DataVolumes ==="
+    kubectl -n {{namespace}} get dv
+    @echo ""
+    @echo "=== Service ==="
+    kubectl -n {{namespace}} get svc {{demo_vm_name}}
+    @echo ""
+    @echo "=== Pods ==="
+    kubectl -n {{namespace}} get pods
+
+# Open VNC console to the deployed VM in <namespace>
+[group('deploy')]
+deploy-vnc namespace:
+    virtctl vnc -n {{namespace}} {{demo_vm_name}}
+
+# Delete the deployed VM, its RBAC, and the namespace for <namespace>
+[group('deploy')]
+[confirm("Delete the deployed VM, RBAC and namespace? (y/n)")]
+deploy-destroy namespace:
+    just --set build_namespace {{build_namespace}} _render {{namespace}} | kubectl delete -f - --ignore-not-found
+
+# Render a self-contained manifest for <namespace> into output_dir
+[group('deploy')]
+generate namespace:
+    @mkdir -p {{output_dir}}
+    @just --set build_namespace {{build_namespace}} _render {{namespace}} > {{output_dir}}/vm-{{namespace}}.yaml
+    @echo "Generated: {{output_dir}}/vm-{{namespace}}.yaml"
+    @echo ""
+    @echo "Apply with:   kubectl apply -f {{output_dir}}/vm-{{namespace}}.yaml"
+    @echo "Delete with:  kubectl delete -f {{output_dir}}/vm-{{namespace}}.yaml"

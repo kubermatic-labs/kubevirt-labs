@@ -57,11 +57,39 @@ The process has four phases:
 - A Windows 10 ISO (uploaded as a DataVolume)
 - Instance type `u1.large` and preference `windows.10.virtio` available on the cluster
 
+### Cluster prerequisites: Longhorn storage
+
+KubeVirt VM disks — including the **golden image** — must be **Block** volumes on a
+storage class that supports RWX+Block (`kubev-vms`: Longhorn with `migratable: "true"`).
+The golden must be Block because deploys clone it into a Block VM disk, and only a
+**Block→Block** clone is a raw `dd` copy. A **Filesystem** golden instead forces a
+host-assisted clone whose non-root source pod runs `du` and dies on the root-owned
+`lost+found` (`Permission denied`), so the clone hangs forever. `upload-to-kubev.sh`
+(and `image-export/vm-from-registry-image.yaml`) create Block volumes accordingly.
+
+On a Longhorn cluster with **fewer nodes than the storage class's replica count**
+(`kubev-vms` uses `numberOfReplicas: 3`, but the demo cluster has 2 nodes), new CDI
+volumes (clone targets, import scratch, upload targets) fail to schedule with
+`ReplicaSchedulingFailure` / "insufficient storage" until Longhorn is tuned once,
+cluster-wide:
+
+```bash
+# allow >1 replica per node (3 replicas on 2 nodes)
+kubectl -n longhorn-system patch settings.longhorn.io replica-soft-anti-affinity \
+  --type merge -p '{"value":"true"}'
+# thin VM disks: reservation >> real usage, so raise the provisioning cap
+kubectl -n longhorn-system patch settings.longhorn.io storage-over-provisioning-percentage \
+  --type merge -p '{"value":"200"}'
+```
+
+For the demo cluster these are version-controlled in the `demo-envs` repo at
+`kubev/manifests/longhorn-settings.yaml` (applied alongside `storageclasses.yaml`).
+
 ## Directory Structure
 
 ```
 packer/windows-10/
-├── Makefile                    # All targets organized by phase
+├── Justfile                    # All recipes organized by phase (run: just --list)
 ├── windows-10.pkr.hcl          # Packer template
 ├── iso-datavolume.yaml          # Windows ISO DataVolume definition
 ├── autounattend.xml             # Unattended Windows install answers
@@ -72,7 +100,7 @@ packer/windows-10/
 │   ├── enable-winrm.ps1         # Enable WinRM for Packer provisioning
 │   ├── setup-iis.ps1            # IIS + demo web page
 │   └── configure-golden-image.ps1  # RDP, privacy, regional settings
-├── vm-from-golden-image.yaml    # Deploy VM by cloning on-cluster DataSource
+├── vm-from-golden-image.yaml    # Deploy VM by cloning on-cluster DataSource (namespace placeholders)
 ├── verify-rdp-service.yaml      # RDP service for verification
 ├── image-export/
 │   ├── download-golden-image.sh # Download golden image from build cluster
@@ -92,17 +120,17 @@ packer/windows-10/
 cd packer/windows-10
 
 # Full pipeline: upload ISO, wait, init packer, check prerequisites, build
-make all
+just all
 ```
 
 Or step by step:
 
 ```bash
-make setup          # Create namespace + ISO DataVolume
-make iso-wait       # Wait for ISO download to complete
-make init           # Initialize Packer plugins
-make check-prereqs  # Verify instance type, preference, ISO exist
-make build          # Run the Packer build (~45 min)
+just setup          # Create namespace + ISO DataVolume
+just iso-wait       # Wait for ISO download to complete
+just init           # Initialize Packer plugins
+just check-prereqs  # Verify instance type, preference, ISO exist
+just build          # Run the Packer build (~45 min)
 ```
 
 **What Packer does:**
@@ -124,9 +152,9 @@ The build user `admin` is created by `autounattend.xml` for Packer's WinRM provi
 ### Phase 2: Verify the Golden Image
 
 ```bash
-make verify       # Boot the golden image and expose RDP
-make vnc          # Connect via VNC
-make verify-stop  # Shut down after testing
+just verify       # Boot the golden image and expose RDP
+just vnc          # Connect via VNC
+just verify-stop  # Shut down after testing
 ```
 
 ### Phase 3: Export the Golden Image
@@ -135,7 +163,7 @@ Download the golden image from the build cluster:
 
 ```bash
 export SRC_KUBECONFIG=/path/to/build-cluster-kubeconfig
-make image-download   # Downloads to .disks/win10-golden.img.gz
+just image-download   # Downloads to .disks/win10-golden.img.gz
 ```
 
 The download script handles clusters without external export links by falling back to `kubectl port-forward`.
@@ -149,32 +177,54 @@ Then choose how to transfer it:
 skopeo login quay.io
 
 # Push to registry (uses skopeo, no local Docker/podman build needed)
-make upload-to-oci
+just upload-to-oci
 ```
 
-**Option B: Upload directly to a KubeVirt cluster**
+**Option B: Upload directly to a KubeVirt cluster** (recommended)
 
 ```bash
 # Upload the disk file straight to the target cluster via virtctl
 export DST_KUBECONFIG=/path/to/target-cluster-kubeconfig
-make upload-to-kubev
+just upload-to-kubev
 ```
 
-This uses `virtctl image-upload` to push the disk directly to CDI's upload proxy. Faster than the OCI route and works well when the target cluster can't pull from the registry (e.g. air-gapped or network-restricted environments).
+`virtctl image-upload` pushes the disk straight to CDI's upload proxy — faster than the OCI
+route and works when the target cluster can't pull from a registry (air-gapped /
+network-restricted). The script sets up a `kubectl port-forward` automatically if the proxy
+isn't externally exposed.
+
+It creates, in namespace `win10-golden`:
+
+- a **Block** DataVolume/PVC `windows-10-golden` on the `kubev-vms` StorageClass, and
+- a DataSource `windows-10-golden` pointing at it.
+
+**Block mode is mandatory** — see [Cluster prerequisites: Longhorn storage](#cluster-prerequisites-longhorn-storage)
+for why (a Filesystem golden makes every clone hang on `lost+found`). Override the defaults
+with env vars: `TARGET_NS` (`win10-golden`), `DISK_SIZE` (`50Gi`),
+`TARGET_STORAGE_CLASS` (`kubev-vms`), `VOLUME_MODE` (`block`), `ACCESS_MODE` (`ReadWriteMany`).
+
+From here, deploy VMs either by **cloning** this DataSource — Phase 4 Option A with
+`just --set build_namespace win10-golden deploy <ns>` — or by booting the uploaded disk
+**directly** (Phase 4 Option C).
 
 ### Phase 4: Deploy VMs
 
 **Option A: Clone from on-cluster DataSource** (same cluster as the build):
 
 ```bash
-make deploy DEMO_NS=my-win10-vm
+just deploy my-win10-vm
 ```
+
+> The clone source namespace is the Justfile `build_namespace` variable (default
+> `build-vm-win10`, matching the Packer build). If the golden was created via
+> `upload-to-kubev.sh` (namespace `win10-golden`), point the deploy at it:
+> `just --set build_namespace win10-golden deploy my-win10-vm`.
 
 **Option B: Import from OCI registry** (any cluster with registry access):
 
 ```bash
 export KUBECONFIG=/path/to/target-cluster-kubeconfig
-make deploy-registry
+just deploy-registry my-win10-vm
 ```
 
 This creates a DataVolume that pulls from the OCI registry. CDI auto-detects and decompresses the gzip image. Note that CDI requires scratch space equal to the DataVolume size during registry imports (~100Gi total temporarily for a 50Gi disk).
@@ -183,31 +233,55 @@ This creates a DataVolume that pulls from the OCI registry. CDI auto-detects and
 
 ```bash
 export DST_KUBECONFIG=/path/to/target-cluster-kubeconfig
-make deploy-upload
+just deploy-upload
 ```
 
 ### Manage Deployed VMs
 
 ```bash
-make deploy-status   # Show VM, DataVolume, Pod status
-make deploy-vnc      # Open VNC console
-make deploy-destroy  # Delete the VM and namespace
+just deploy-status my-win10-vm   # Show VM, DataVolume, Pod status
+just deploy-vnc my-win10-vm      # Open VNC console
+just deploy-destroy my-win10-vm  # Delete the VM and namespace
 ```
 
-## Makefile Targets
+## Justfile Recipes
 
-Run `make help` to see all available targets grouped by phase.
+Run `just` (or `just --list`) to see all recipes grouped by phase. The deploy recipes
+(`deploy`, `generate`, `deploy-status`, `deploy-vnc`, `deploy-destroy`, `deploy-registry`)
+take the target namespace as a **required** argument, e.g. `just deploy my-win10-vm`.
 
-## Environment Variables
+The deployment manifest `vm-from-golden-image.yaml` is namespace-agnostic via two
+placeholder tokens that the Justfile substitutes with `sed`:
 
-| Variable               | Default                                                  | Description                            |
-|------------------------|----------------------------------------------------------|----------------------------------------|
-| `NAMESPACE`            | `build-vm-win10`                                         | Build namespace                        |
-| `VM_NAME`              | `windows-10-golden`                                      | Golden image VM name                   |
-| `DEMO_NS`              | `win10-golden`                                           | Namespace for deployed demo VMs        |
-| `TIMEOUT`              | `10m`                                                    | Wait timeout for DataVolume operations |
-| `SRC_KUBECONFIG`       | *(required for download)*                                | Kubeconfig for the build cluster       |
-| `DST_KUBECONFIG`       | *(required for upload-to-kubev)*                         | Kubeconfig for the target cluster      |
-| `REGISTRY_IMAGE`       | `quay.io/toschneck/kvirt-disks-windows-10-golden:latest` | Target OCI registry image              |
-| `TARGET_STORAGE_CLASS` | *(cluster default)*                                      | Storage class on the target cluster    |
-| `ACCESS_MODE`          | `ReadWriteMany`                                          | PVC access mode for direct uploads     |
+- `__TODO_NAMESPACE__` — the runtime namespace to deploy into (the required recipe argument).
+- `__TODO_BUILD_NAMESPACE__` — the namespace holding the golden image (the `build_namespace` variable).
+
+## Configuration
+
+**Justfile variables** — override per invocation with `just --set <name> <value> <recipe>`,
+or edit the defaults in the `Justfile`:
+
+| Variable          | Default                                                  | Description                                                        |
+|-------------------|----------------------------------------------------------|--------------------------------------------------------------------|
+| `build_namespace` | `build-vm-win10`                                         | Build/source namespace; fills `__TODO_BUILD_NAMESPACE__` on deploy |
+| `golden_vm_name`  | `windows-10-golden`                                      | Golden image VM + DataSource name                                  |
+| `demo_vm_name`    | `win10-demo`                                             | Fixed name of the deployed VM/Service                              |
+| `timeout`         | `10m`                                                    | Wait timeout for DataVolume/VMI operations                         |
+| `registry_image`  | `quay.io/toschneck/kvirt-disks-windows-10-golden:latest` | Target OCI registry image                                          |
+| `output_dir`      | `./generated`                                            | Where `just generate` writes rendered manifests                    |
+
+The **runtime namespace is not a variable** — it is a required argument to the deploy
+recipes (`just deploy <namespace>`, `just generate <namespace>`, …) and fills
+`__TODO_NAMESPACE__`.
+
+**Environment variables** — read by the `image-export/*.sh` scripts:
+
+| Variable               | Default                          | Description                                             |
+|------------------------|----------------------------------|---------------------------------------------------------|
+| `SRC_KUBECONFIG`       | *(required for download)*        | Kubeconfig for the build cluster                        |
+| `DST_KUBECONFIG`       | *(required for upload-to-kubev)* | Kubeconfig for the target cluster                       |
+| `TARGET_NS`            | `win10-golden`                   | Namespace for the uploaded golden + DataSource          |
+| `DISK_SIZE`            | `50Gi`                           | Size of the uploaded golden volume                      |
+| `TARGET_STORAGE_CLASS` | `kubev-vms`                      | Storage class for the uploaded golden (RWX + Block)     |
+| `VOLUME_MODE`          | `block`                          | Volume mode for the uploaded golden (**must** be Block) |
+| `ACCESS_MODE`          | `ReadWriteMany`                  | PVC access mode for direct uploads                      |

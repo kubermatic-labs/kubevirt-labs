@@ -25,7 +25,13 @@ DATASOURCE_NAME="windows-10-golden"
 TARGET_NS="${TARGET_NS:-win10-golden}"
 DISK_SIZE="${DISK_SIZE:-50Gi}"
 DISK_FILE="${1:-${DISKS_DIR}/win10-golden.img.gz}"
-STORAGE_CLASS="${TARGET_STORAGE_CLASS:-}"
+# Default to the kubev-vms StorageClass in Block mode. The golden image MUST be Block:
+# later deploys clone it into a Block VM disk, and a Block->Block clone is a raw dd copy.
+# A Filesystem golden instead forces a host-assisted clone whose source pod runs `du` and
+# dies on the root-owned lost+found ("Permission denied"), so the clone never finishes.
+# See ../README.md ("Cluster prerequisites").
+STORAGE_CLASS="${TARGET_STORAGE_CLASS:-kubev-vms}"
+VOLUME_MODE="${VOLUME_MODE:-block}"
 ACCESS_MODE="${ACCESS_MODE:-ReadWriteMany}"
 LOCAL_PORT="${LOCAL_PORT:-18443}"
 
@@ -105,6 +111,7 @@ UPLOAD_CMD=(
     --size="$DISK_SIZE"
     --image-path="$DISK_FILE"
     --access-mode="$ACCESS_MODE"
+    --volume-mode="$VOLUME_MODE"
     --namespace="$TARGET_NS"
     --uploadproxy-url="$UPLOAD_PROXY_URL"
     --force-bind
