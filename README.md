@@ -2,6 +2,10 @@
 
 We presented a talk about Windows on Kubevirt at ContainerDays London 2026, you can [use this link to open the slides](https://docs.google.com/presentation/d/1hGCvJqT55tIRZRPwNfIibjv-Foo_l4GdT0FOTSEsWPM/edit?usp=sharing).
 
+## Guides
+
+- [Create a demo Ubuntu VM via the UI](linux/kubev-demo-vm-UI.md) — screenshot walkthrough of the Kubermatic Virtualization dashboard, including the two settings that most often break UI-created VMs (instance type and storage class).
+
 ## Helper
 ```
 #quick select VM name of current ns
