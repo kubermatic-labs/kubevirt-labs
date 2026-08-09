@@ -5,6 +5,7 @@ We presented a talk about Windows on Kubevirt at ContainerDays London 2026, you 
 ## Guides
 
 - [Create a demo Ubuntu VM via the UI](linux/kubev-demo-vm-UI.md) — screenshot walkthrough of the Kubermatic Virtualization dashboard, including the two settings that most often break UI-created VMs (instance type and storage class).
+- [Create a demo Windows 10 VM via the UI](windows/kubev-demo-vm-windows-UI.md) — screenshot walkthrough for deploying the Windows golden image, with the Windows-specific settings (`u1.large` + UEFI, and a `kubev-vms` Block/scsi disk).
 
 ## Helper
 ```
