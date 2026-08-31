@@ -2,3 +2,5 @@
 .disks/
 *.img.gz
 *.img
+*kubeconfig
+*kubeconfig.crypt

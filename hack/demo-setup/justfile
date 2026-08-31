@@ -1,0 +1,117 @@
+# Demo setup helper for the KubeVirt bastion VM (tobi-demo-bastion).
+#
+# Wraps deploy.sh (cloudinit/apply/status/endpoints/destroy) so the demo handling
+# stays consistent with the house `just` conventions while keeping the
+# idempotency / skip-auth logic in bash. Run `just` (or `just --list`).
+#
+# Access is via the DEDICATED PUBLIC IP (KubeLB, routing cluster) - plain `ssh`,
+# not the name-based `virtctl ssh` tunnel. See README.md.
+
+set shell := ["bash", "-uc"]
+
+# Load kubeconfig + SSH vars from demo.env (gitignored)
+set dotenv-load
+set dotenv-filename := "demo.env"
+set export
+
+NAMESPACE := "kubermatic-virtualization"
+VM_NAME := "tobi-demo-bastion"
+
+# ---------------------------------------------------------------------------
+# Default
+# ---------------------------------------------------------------------------
+
+# List available demo recipes
+_default:
+    @just --list
+
+# ---------------------------------------------------------------------------
+# Lifecycle
+# ---------------------------------------------------------------------------
+
+# Publish cloud-init as a Secret, apply the VM, wait for Ready, wire the LB, print SSH
+apply:
+    @just _check-kubeconfig
+    @bash deploy.sh apply
+
+# Push cloudinit/bastion-user-data.sh into secret/tobi-demo-bastion-cloudinit
+cloudinit:
+    @just _check-kubeconfig
+    @bash deploy.sh cloudinit
+
+# VM/VMI/pod/PVC + pinned IP + public LB IP + endpoint health
+status:
+    @bash deploy.sh status
+
+# Re-point the routing cluster's Endpoints at the VM's current IP
+publish:
+    @bash deploy.sh endpoints
+
+# Delete the VM, its PVCs and the cloud-init Secret (keeps the public LB IP)
+destroy:
+    @bash deploy.sh destroy
+
+# Destroy + apply. Needed after editing cloud-init: it only runs on a FRESH instance
+recreate:
+    @bash deploy.sh destroy
+    @bash deploy.sh apply
+
+# ---------------------------------------------------------------------------
+# Access
+# ---------------------------------------------------------------------------
+
+# BASTION_SSH_KEY is OPTIONAL: id_rsa_loodse lives in the ssh-agent, not on disk
+# (`ssh-add -l` to confirm), so by default we let the agent supply it. Set
+# BASTION_SSH_KEY in demo.env only if you want to force a specific key file.
+#
+# SSH into the bastion over the dedicated public IP (no virtctl tunnel)
+ssh *ARGS:
+    ssh ${BASTION_SSH_KEY:+-i "${BASTION_SSH_KEY}"} \
+        -o StrictHostKeyChecking=accept-new \
+        "${BASTION_SSH_USER:-ubuntu}@${BASTION_LB_IP}" {{ quote(ARGS) }}
+
+# Fastest working path while KubeLB is broken - plain WireGuard, no jump pod.
+# Needs this machine on the same tailnet (Tailscale.app on macOS).
+#
+# SSH over Tailscale (bypasses the broken KubeLB hop)
+ssh-ts *ARGS:
+    ssh -o StrictHostKeyChecking=accept-new \
+        "${BASTION_SSH_USER:-ubuntu}@${BASTION_TS_IP}" {{ quote(ARGS) }}
+
+# The key stays in your local ssh-agent; the pod only shuttles bytes to VM:22.
+#
+# SSH via a socat jump pod in the seed (works when the KubeLB hop is down)
+ssh-jump *ARGS:
+    ssh -o ProxyCommand="kubectl --kubeconfig=${KUBECONFIG_KUBEV} -n {{ NAMESPACE }} run sshjump-$$ --rm -i --restart=Never --image=alpine/socat -q -- - TCP:${BASTION_VM_IP}:22" \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=25 \
+        "${BASTION_SSH_USER:-ubuntu}@${BASTION_VM_IP}" {{ quote(ARGS) }}
+
+# Serial console fallback when the LB path is broken (needs virtctl v1.6.5)
+console:
+    virtctl console {{ VM_NAME }} -n {{ NAMESPACE }}
+
+# Tail cloud-init output from the guest (verifies the Secret was consumed)
+cloudinit-log:
+    @just ssh-jump 'sudo tail -n 80 /var/log/cloud-init-output.log'
+
+# Print the dedicated public IP
+ip:
+    @echo "${BASTION_LB_IP}   (VM on ovn-default: ${BASTION_VM_IP})"
+
+# ---------------------------------------------------------------------------
+# Convenience
+# ---------------------------------------------------------------------------
+
+# Watch vm/vmi/pod/pvc progress (Ctrl-C to exit)
+watch:
+    KUBECONFIG="${KUBECONFIG_KUBEV}" watch kubectl get vm,vmi,po,pvc -n {{ NAMESPACE }} -l vm.kubevirt.io/name={{ VM_NAME }} -o wide
+
+# ---------------------------------------------------------------------------
+# Private
+# ---------------------------------------------------------------------------
+
+# Verify the kubeconfig referenced by demo.env resolves to a file
+[private]
+_check-kubeconfig:
+    @test -n "${KUBECONFIG_KUBEV:-}" || { echo "!! KUBECONFIG_KUBEV is unset (check hack/demo-setup/demo.env)"; exit 1; }
+    @test -f "${KUBECONFIG_KUBEV}" || { echo "!! kubeconfig not found: ${KUBECONFIG_KUBEV}"; exit 1; }

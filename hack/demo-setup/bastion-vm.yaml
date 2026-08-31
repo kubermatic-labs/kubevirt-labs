@@ -1,0 +1,122 @@
+# Canonical manifest for the tobi-demo-bastion KubeVirt VM.
+#
+# Uses dataVolumeTemplates, so this manifest creates both DataVolumes/PVCs and
+# the VM from scratch (mirrors linux/00_kubevirt-vm-ubuntu-kkp-like.yaml):
+#
+#   tobi-demo-bastion      -> 15G root disk (registry golden image ubuntu:24.04-amd64)
+#   tobi-demo-bastion-data -> 50G blank data disk (formatted + mounted at /data via cloud-init)
+#
+# ONE PREREQUISITE: the cloud-init Secret `tobi-demo-bastion-cloudinit` must
+# exist first (`just cloudinit`, or just use `just apply`, which does both).
+# Cloud-init no longer lives inline here - see the volumes section for why.
+#
+# Networking is on the DEFAULT pod network (ovn-default) at the pinned address
+# 172.16.15.255: reachable from the cluster/pod plane, which the old multus/VPC
+# (10.x) placement was NOT, and stable enough to be published through the
+# routing cluster's LoadBalancer. See the README for the why.
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  namespace: kubermatic-virtualization
+  labels:
+    kubevirt.io/vm: tobi-demo-bastion
+  name: tobi-demo-bastion
+spec:
+  dataVolumeTemplates:
+  - metadata:
+      creationTimestamp: null
+      name: tobi-demo-bastion
+    spec:
+      source:
+        registry:
+          pullMethod: node
+          url: docker://quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64
+      storage:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 15G
+        storageClassName: kubev-vms
+  - metadata:
+      creationTimestamp: null
+      name: tobi-demo-bastion-data
+    spec:
+      source:
+        blank: {}
+      storage:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 50G
+        storageClassName: kubev-vms
+  runStrategy: Always
+  template:
+    metadata:
+      annotations:
+        # NIC on the DEFAULT pod network (ovn-default), matching the working
+        # worker-VM pattern (e.g. datastore-ch-kubev-hamburg... / win10-demo,
+        # all on 172.16.x.x). These are reachable from the cluster/pod plane,
+        # unlike the isolated multus/VPC subnets (10.x) which are NOT reachable.
+        # Default-network NIC -> use the PLAIN ovn.kubernetes.io/* keys (no
+        # multus NAD) on ovn-default (172.16.0.0/16).
+        ovn.kubernetes.io/logical_switch: ovn-default
+        # DEDICATED IP. Pinned on purpose: the bastion is published through a
+        # Service with NO selector on the routing cluster, whose Endpoints
+        # hard-code this address (routing-cluster/bastion-svc-lb.yaml). With an
+        # auto-allocated IP the Endpoints silently go stale on every VM
+        # recreate. kube-ovn also runs --keep-vm-ip=true, so the address
+        # survives reboots and live migration.
+        # Kyverno (enforce-vm-vpc-namespace-slice) freezes logical_router /
+        # logical_switch after creation but does NOT touch ip_address.
+        ovn.kubernetes.io/ip_address: 172.16.15.255
+      labels:
+        kubevirt.io/vm: tobi-demo-bastion
+    spec:
+      architecture: amd64
+      domain:
+        cpu:
+          cores: 2
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: datavolumedisk
+          - disk:
+              bus: virtio
+            name: datadisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          interfaces:
+          - bridge: {}
+            model: virtio
+            name: default
+        resources:
+          limits:
+            memory: 4G
+          requests:
+            memory: 4G
+      networks:
+      - name: default
+        pod: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - dataVolume:
+          name: tobi-demo-bastion
+        name: datavolumedisk
+      - dataVolume:
+          name: tobi-demo-bastion-data
+        name: datadisk
+      # Cloud-init lives in the Secret `tobi-demo-bastion-cloudinit` (key
+      # `userData`), generated from cloudinit/bastion-user-data.sh by
+      # `deploy.sh cloudinit` / `just cloudinit`.
+      #
+      # WHY NOT INLINE: KubeVirt caps inline `cloudInitNoCloud.userData` at
+      # 2048 bytes; this bootstrap is ~3.8 kB. Note the YAML key is `secretRef`
+      # even though the API field is called UserDataSecretRef.
+      - cloudInitNoCloud:
+          secretRef:
+            name: tobi-demo-bastion-cloudinit
+        name: cloudinitdisk

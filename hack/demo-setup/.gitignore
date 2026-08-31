@@ -1,0 +1,4 @@
+demo.env
+
+# Manual runbooks holding real CIDRs, tailnet names and admin-console steps.
+*.local.md
