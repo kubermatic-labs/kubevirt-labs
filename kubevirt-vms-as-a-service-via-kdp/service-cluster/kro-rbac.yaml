@@ -1,0 +1,47 @@
+---
+# kro ships with RBAC for its own CRDs only. It additionally needs access to the
+# instance CRDs these RGDs define and to every resource they create.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kro:kubev-vms:resources
+rules:
+  # the instance CRDs defined by our RGDs
+  - apiGroups: [kubev.k8c.io]
+    resources: ["*"]
+    verbs: ["*"]
+  # what the RGDs create
+  - apiGroups: [kubevirt.io]
+    resources: [virtualmachines, virtualmachineinstances]
+    verbs: ["*"]
+  - apiGroups: [kubeovn.io]
+    resources: [vpcs, subnets, vpc-egress-gateways]
+    verbs: ["*"]
+  - apiGroups: [""]
+    resources: [services]
+    verbs: ["*"]
+  - apiGroups: [cdi.kubevirt.io]
+    resources: [datavolumes, datasources]
+    verbs: ["*"]
+  # the Windows RGD mints a CDI clone ClusterRole/RoleBinding. Kubernetes forbids
+  # granting rights you do not hold, so kro needs datavolumes/source itself.
+  - apiGroups: [cdi.kubevirt.io]
+    resources: [datavolumes/source]
+    verbs: [create]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles, rolebindings]
+    verbs: ["*"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kro:kubev-vms:resources
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kro:kubev-vms:resources
+subjects:
+  - kind: ServiceAccount
+    name: kro
+    namespace: kro-system

@@ -13,7 +13,8 @@ Two things differ from a plain KubeVirt VM:
 ## Prerequisites
 
 `kubectl` on `PATH` (`virtctl` only for the console fallback) and `demo.env` (gitignored)
-with `KUBECONFIG_KUBEV` + `KUBECONFIG_ROUTING_CLUSTER`.
+with `KUBECONFIG_KUBEV` + `KUBECONFIG_ROUTING_CLUSTER`. The KubeLB recipes additionally need
+`helm` and `helmfile` - see `kubelb-ccm/README.md`.
 
 ## Files
 
@@ -26,6 +27,7 @@ with `KUBECONFIG_KUBEV` + `KUBECONFIG_ROUTING_CLUSTER`.
 | `demo.env`                            | kubeconfigs, IPs, SSH user (gitignored) |
 | `routing-cluster/bastion-svc-lb.yaml` | LoadBalancer + manual Endpoints on the KKP routing cluster |
 | `tailscale-routing.local.md`          | Manual steps to make the VM a tailnet subnet router (gitignored) |
+| `kubelb-ccm/`                         | KubeLB CCM release for this cluster - see `kubelb-ccm/README.md` |
 
 ## Deploy
 
@@ -122,6 +124,35 @@ KubeLB envoy in the GCP fog cluster cannot route to.
 
 Confirming needs the KubeLB management ("fog") cluster; its kubeconfig is not on this
 machine.
+
+> **Update 2026-09-03.** There is a second, closer break in the same chain. The
+> `kubevirt-ccm` mirror of `bastion-vm` on *this* cluster -
+> `svc/acbd7ec2eff89440a9e1a044469217e2` in `kubermatic-virtualization`, labelled
+> `cluster.x-k8s.io/cluster-name: khf59tv58t` - is itself `<pending>`, because this cluster
+> had no LoadBalancer implementation at all. `kubelb-ccm/` is the fix for that hop. The
+> manager here is the KKP demo KubeLB (`kubelb.kkp.demo.kubermatic.io`), not fog.
+
+## KubeLB CCM
+
+`kubelb-ccm/` registers this cluster as tenant `kubev-vm-ccm` against the KubeLB manager
+behind `kubelb.kkp.demo.kubermatic.io`, so a Service here can get a real public IP instead
+of a `<pending>` LoadBalancer.
+
+```bash
+just kubelb-diff      # render only, no cluster writes
+just kubelb-apply     # CRDs + secret/kubelb-cluster + helm upgrade --install
+just kubelb-status    # CCM pod + which Services opted in
+just kubelb-tenant    # manager-side: TenantState, LoadBalancers, Routes, Addresses
+```
+
+Scope is **opt-in**: only Services with `spec.loadBalancerClass: kubelb` are published, so
+the 17 LoadBalancers already sitting `<pending>` on this cluster are left alone. That field
+is immutable, so opting an existing Service in means recreating it.
+
+**Verified 2026-09-03.** The manager's envoy does reach the nodes at `10.32.0.0/24`:
+`svc/win10-demo` publishes on `34.159.77.166` and answers a real RDP handshake. The catch is
+one layer down - a VM in its own kube-ovn VPC is unreachable over `nodeIP:nodePort`, so this
+only works for VMs on `ovn-default`. Details in `kubelb-ccm/README.md`.
 
 ## Manual, NOT provisioned
 

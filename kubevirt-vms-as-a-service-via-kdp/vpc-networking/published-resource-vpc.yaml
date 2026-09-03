@@ -3,11 +3,16 @@ apiVersion: syncagent.kcp.io/v1alpha1
 kind: PublishedResource
 metadata:
   name: publish-kubev-vpcs
+  labels:
+    kdp.k8c.io/syncagent: kubev-vms
 spec:
-   resource:
-     kind: Vpc
-     apiGroup: virtualization.k8c.io
-     version: "v1alpha1"
-   naming:
-     namespace: '{{ .ClusterName }}-{{ .Object.metadata.namespace }}'
-     name: '{{ .Object.metadata.name }}'
+  resource:
+    kind: Vpc
+    apiGroup: kubev.k8c.io
+    versions: [v1alpha1]
+  # kube-OVN Vpcs are cluster-scoped, so a VPC is workspace-global: its name must be
+  # unique within a consumer workspace. The cluster hash prefix keeps it clear of the
+  # VPCs KubeV manages itself.
+  naming:
+    namespace: kubermatic-virtualization
+    name: 'kdp-{{ .ClusterName }}-{{ .Object.metadata.name }}'

@@ -1,8 +1,9 @@
 ---
 kind: Vpc
-apiVersion: virtualization.k8c.io/v1alpha1
+apiVersion: kubev.k8c.io/v1alpha1
 metadata:
   name: windows-aas-vpc
+  namespace: windows-aas
   annotations:
     ovn.kubernetes.io/vpc_lb: "off"
 spec:
@@ -13,9 +14,10 @@ spec:
 
 ---
 kind: Subnet
-apiVersion: virtualization.k8c.io/v1alpha1
+apiVersion: kubev.k8c.io/v1alpha1
 metadata:
-  name: windows-ass-subnet
+  name: windows-aas-subnet
+  namespace: windows-aas
 spec:
   cidr: 10.44.0.0/24
   vpc: windows-aas-vpc
@@ -31,5 +33,6 @@ spec:
   instanceType: u1.large
   diskSize: 50Gi
   templateImageName: windows-10-golden
-  subnet: windows-ass-subnet
+  loadBalancerClass: kubelb
+  subnet: windows-aas-subnet
   vpc: windows-aas-vpc

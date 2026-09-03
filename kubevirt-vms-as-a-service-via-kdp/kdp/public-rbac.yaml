@@ -1,0 +1,44 @@
+---
+# Publishes the service to every org on this KDP installation.
+#
+# The service catalog VW wildcard-lists Services across all provider workspaces and then
+# decides per object what the caller may see, using ordinary RBAC *in the provider
+# workspace*. Two grants are needed, and they do different jobs:
+#
+#   get  on the Service   - the tile shows up in another org's catalog, in full.
+#                           (`catalog` instead of `get` would show name/labels only,
+#                           with no spec, and is the right verb for a browse-only teaser.)
+#   bind on the APIExport - the other org may actually create an APIBinding and use the
+#                           kinds. Without it the tile is visible but cannot be added.
+#
+# Multi-tenancy is already handled by the naming templates: every PublishedResource
+# prefixes objects with `kdp-{{ .ClusterName }}-`, so two orgs creating a VPC of the same
+# name do not collide. What is NOT isolated is the service cluster - every org's VMs land
+# in the single `kubermatic-virtualization` namespace and share its quota and storage.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubev.k8c.io:public
+rules:
+  - apiGroups: [core.kdp.k8c.io]
+    resources: [services]
+    resourceNames: [kubev.k8c.io]
+    verbs: [get]
+  - apiGroups: [apis.kcp.io]
+    resources: [apiexports]
+    resourceNames: [kubev.k8c.io]
+    verbs: [bind]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubev.k8c.io:public
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubev.k8c.io:public
+subjects:
+  - kind: Group
+    name: system:authenticated
+    apiGroup: rbac.authorization.k8s.io

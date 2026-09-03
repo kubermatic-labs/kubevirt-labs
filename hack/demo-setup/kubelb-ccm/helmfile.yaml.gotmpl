@@ -1,0 +1,51 @@
+# KubeLB CCM on the KubeVirt demo cluster `kubev-cluster`.
+#
+# Same shape as fog/bcp1/layer2/kubermatic-deployment/80_sub-environments/
+# 31_kkp-master-seed/50_services/01_kubelb, with three deliberate differences:
+#
+#   1. Community Edition. The EE image needs the kubermatic-quay.io regcred that
+#      the fog env carries in sops; the CE image is public, so this env needs no
+#      secret material beyond the tenant kubeconfig.
+#   2. Chart straight from the OCI registry by bare `oci://` ref - there is no
+#      vendored CHARTS_FOLDER in this repo, so fog's `requiredEnv "CHARTS_FOLDER"`
+#      has nowhere to point.
+#   3. res/ holds an IngressClass instead of sops-encrypted Secrets. The
+#      kubelb-cluster Secret is built at presync time from a gitignored
+#      kubeconfig (see presync.sh) because this repo is public.
+#
+# Drive it through the justfile so KUBECONFIG and demo.env are wired up:
+#
+#   just kubelb-diff     # render, no cluster writes
+#   just kubelb-apply    # presync hooks + helm upgrade --install
+{{ $version := env "KUBELB_VERSION" | default "v1.5.0" }}
+{{ $chart   := env "KUBELB_CHART"   | default "oci://quay.io/kubermatic/helm-charts/kubelb-ccm" }}
+
+releases:
+  - name: kubelb-ccm
+    namespace: kubelb
+    createNamespace: true
+    chart: {{ $chart }}
+    version: {{ $version }}
+    hooks:
+      # namespace + chart CRDs + secret/kubelb-cluster.
+      #
+      # The CRD step is load-bearing, not belt-and-braces: the CCM registers its
+      # SyncSecretReconciler against the TENANT cluster unconditionally
+      # (cmd/ccm/main.go - only SecretConversionReconciler is behind
+      # enableSecretSynchronizer), so without syncsecrets.kubelb.k8c.io the
+      # manager's cache never starts and the pod crash-loops.
+      #
+      # Helm v4 does create missing CRDs on `upgrade --install`, but it never
+      # updates one that already exists - so a chart bump still needs this.
+      # $chart is passed in rather than re-declared, so the release and the hook
+      # can never drift apart.
+      - events: ["presync"]
+        showlogs: true
+        command: "bash"
+        args: ["presync.sh", "{{ $chart }}", "{{ $version }}"]
+      - events: ["presync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["--kubeconfig={{ requiredEnv "KUBECONFIG_KUBEV" }}", "apply", "-f", "./res"]
+    values:
+      - values.yaml

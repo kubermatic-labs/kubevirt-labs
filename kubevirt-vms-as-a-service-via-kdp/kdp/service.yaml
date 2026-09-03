@@ -1,0 +1,28 @@
+---
+# KDP reserves one API group per Service. Creating this object makes KDP generate the
+# APIExport, the APIExportEndpointSlice and the kubeconfig Secret used by the api-syncagent.
+apiVersion: core.kdp.k8c.io/v1alpha1
+kind: Service
+metadata:
+  name: kubev.k8c.io
+spec:
+  apiGroup: kubev.k8c.io
+  catalogMetadata:
+    title: KubeVirt Virtual Machines
+    description: >-
+      Self-service KubeVirt virtual machines backed by Kubermatic Virtualization.
+      Provides Ubuntu and Windows VMs plus the kube-OVN Vpc and Subnet resources
+      needed to place them on an isolated tenant network.
+    shortDescription: Ubuntu and Windows VMs with isolated VPC networking
+    category: Infrastructure
+    documentationURL: https://docs.kubermatic.com/kubermatic-virtualization/
+    logo:
+      configMap:
+        name: kubev.k8c.io-logo
+        namespace: default
+        key: logo
+  # KDP writes the generated api-syncagent kubeconfig into this Secret.
+  # Without this block no kubeconfig is produced at all.
+  kubeconfig:
+    name: kubev.k8c.io
+    namespace: default

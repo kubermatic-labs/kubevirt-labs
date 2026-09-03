@@ -99,6 +99,50 @@ ip:
     @echo "${BASTION_LB_IP}   (VM on ovn-default: ${BASTION_VM_IP})"
 
 # ---------------------------------------------------------------------------
+# KubeLB CCM  (tenant kubev-vm-ccm on kubelb.kkp.demo.kubermatic.io)
+# ---------------------------------------------------------------------------
+# Publishes Services from THIS cluster through the KubeLB manager. Scope is
+# opt-in: only Services with `spec.loadBalancerClass: kubelb` are picked up, so
+# the 17 LoadBalancers already sitting <pending> here are left alone.
+#
+# spec.loadBalancerClass is IMMUTABLE - an existing Service cannot be opted in
+# with `kubectl patch`, it has to be deleted and recreated.
+
+# Render the CCM release without touching the cluster
+kubelb-diff:
+    @just _check-kubeconfig
+    cd kubelb-ccm && KUBECONFIG="${KUBECONFIG_KUBEV}" helmfile -f helmfile.yaml.gotmpl template
+
+# Install/upgrade the KubeLB CCM (ns kubelb): CRDs + kubelb-cluster Secret + chart
+kubelb-apply:
+    @just _check-kubeconfig
+    @just _check-kubelb-kubeconfig
+    cd kubelb-ccm && KUBECONFIG="${KUBECONFIG_KUBEV}" helmfile -f helmfile.yaml.gotmpl apply
+
+# CCM pod + the Services this cluster has opted in
+kubelb-status:
+    @echo "== CCM =="
+    KUBECONFIG="${KUBECONFIG_KUBEV}" kubectl -n kubelb get deploy,pod
+    @echo
+    @echo "== Services with loadBalancerClass: kubelb =="
+    KUBECONFIG="${KUBECONFIG_KUBEV}" kubectl get svc -A \
+        -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,CLASS:.spec.loadBalancerClass,EXTERNAL:.status.loadBalancer.ingress[*].ip,PORTS:.spec.ports[*].port' \
+        | awk 'NR==1 || $3=="kubelb"'
+
+# Manager-side view: what the tenant actually has registered
+kubelb-tenant:
+    kubectl --kubeconfig="${KUBELB_CCM_KUBECONFIG}" get \
+        tenantstates,loadbalancers,routes,addresses -o wide
+
+# Follow the CCM logs
+kubelb-logs *ARGS:
+    KUBECONFIG="${KUBECONFIG_KUBEV}" kubectl -n kubelb logs -l app.kubernetes.io/name=kubelb-ccm --tail=100 -f {{ ARGS }}
+
+# Remove the CCM release (leaves ns/kubelb, the Secret and the CRDs in place)
+kubelb-destroy:
+    KUBECONFIG="${KUBECONFIG_KUBEV}" helm -n kubelb uninstall kubelb-ccm
+
+# ---------------------------------------------------------------------------
 # Convenience
 # ---------------------------------------------------------------------------
 
@@ -115,3 +159,10 @@ watch:
 _check-kubeconfig:
     @test -n "${KUBECONFIG_KUBEV:-}" || { echo "!! KUBECONFIG_KUBEV is unset (check hack/demo-setup/demo.env)"; exit 1; }
     @test -f "${KUBECONFIG_KUBEV}" || { echo "!! kubeconfig not found: ${KUBECONFIG_KUBEV}"; exit 1; }
+
+# Verify the KubeLB tenant kubeconfig resolves and still authenticates
+[private]
+_check-kubelb-kubeconfig:
+    @test -f "${KUBELB_CCM_KUBECONFIG:-}" || { echo "!! KubeLB tenant kubeconfig not found: ${KUBELB_CCM_KUBECONFIG:-<unset>}"; exit 1; }
+    @kubectl --kubeconfig="${KUBELB_CCM_KUBECONFIG}" auth whoami >/dev/null 2>&1 \
+        || { echo "!! KubeLB tenant kubeconfig does not authenticate (expired token?)"; exit 1; }

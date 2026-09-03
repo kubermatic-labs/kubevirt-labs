@@ -1,0 +1,48 @@
+# JSON Patch (RFC 6902) that stamps an OpenAPI `title` onto every Vpc spec and status
+# property, so the KDP dashboard stops rendering "Vpc Peerings", "Enable Bfd" and
+# "Cidr". See linux/crd-titles.yaml for the full rationale. Applied by `just sc-titles`.
+
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/staticRoutes/title
+  value: Static Routes
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/staticRoutes/items/properties/cidr/title
+  value: CIDR
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/staticRoutes/items/properties/nextHopIP/title
+  value: Next Hop IP
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/staticRoutes/items/properties/policy/title
+  value: Policy
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/vpcPeerings/title
+  value: VPC Peerings
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/vpcPeerings/items/properties/remoteVpc/title
+  value: Remote VPC
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/vpcPeerings/items/properties/localConnectIP/title
+  value: Local Connect IP
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/externalSubnet/title
+  value: External Subnet
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/enableBfd/title
+  value: Enable BFD
+
+# --- status ------------------------------------------------------------------
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/router/title
+  value: Router
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/state/title
+  value: State
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/title
+  value: Conditions
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/enableExternal/title
+  value: Enable External
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/bfdPort/title
+  value: BFD Port

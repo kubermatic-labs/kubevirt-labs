@@ -1,0 +1,33 @@
+---
+# Values for the kcp api-syncagent helm chart 0.6.2 (app v0.7.0).
+#
+# NOTE: chart >= 0.6.x replaced `apiExportName` with `apiExportEndpointSliceName`.
+# The slice is created by KDP when the Service is created; its name matches the
+# APIExport name reported in `Service.status.apiExport.name`.
+apiExportEndpointSliceName: kubev.k8c.io
+
+# Name of the Secret (in the release namespace) holding a `kubeconfig` key that
+# points at the kcp workspace. Created by `just agent-secret` from the Secret KDP
+# generated in root:tobi-org.
+kcpKubeconfig: kcp-kubeconfig
+
+agentName: kubev-vms
+
+# Scope this agent to its own PublishedResources. An unscoped agent also tries to
+# process other agents' PRs, fails the RBAC check and kills its own sync controller.
+publishedResourceSelector: kdp.k8c.io/syncagent=kubev-vms
+
+replicas: 1
+enableLeaderElection: true
+
+image:
+  repository: ghcr.io/kcp-dev/api-syncagent
+  tag: v0.7.0
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 1
+    memory: 512Mi

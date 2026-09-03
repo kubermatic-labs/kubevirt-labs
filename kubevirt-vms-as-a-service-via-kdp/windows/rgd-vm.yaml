@@ -5,86 +5,94 @@ metadata:
   name: windowsvirtualmachines.kubev.k8c.io
 spec:
   schema:
-    additionalPrinterColumns:
-    - jsonPath: .metadata.creationTimestamp
-      name: Age
-      type: date
-    - jsonPath: .status.properties.phase.expression
-      name: Phase
-      type: string
-    - jsonPath: .spec.memory
-      name: Memory
-      type: string
-    - jsonPath: .spec.cpu
-      name: Cores
-      type: integer
-    - jsonPath: .status.properties.interfaces.expression[0].ipAddress
-      name: IP Address
-      type: string
-    - jsonPath: .spec.diskSize
-      name: Disk Size
-      type: string
-    - jsonPath: .status.properties.loadBalancerIP.expression
-      name: LB IP
-      type: string
-    - jsonPath: .status.properties.port.expression
-      name: Port
-      type: integer
-    - jsonPath: .status.properties.nodePort.expression
-      name: NodePort
-      type: integer
     apiVersion: v1alpha1
     kind: WindowsVirtualMachine
     group: kubev.k8c.io
     spec:
-      instanceType: string
-      diskSize: string
-      templateImageName: string
-      subnet: string
-      vpc: string
+      instanceType: string | enum="u1.large,u1.xlarge,u1.2xlarge,u1.4xlarge,u1.8xlarge" default="u1.large" description="VM size. Windows requires u1.large or larger."
+      # A PVC clone can only grow, never shrink. If the target is smaller than the source
+      # CDI rejects it with CloneValidationFailed and then goes SILENT: it never sets a
+      # DataVolume phase and never creates the target PVC, so the VM sits Stopped forever
+      # behind an empty-PHASE DataVolume with no Event to explain it. windows-10-golden is
+      # 50Gi, so anything below that is always invalid - an enum makes the API server
+      # reject it at admission and renders a dropdown in the KDP UI (see README,
+      # 'Dropdowns'). Keep the smallest value >= the golden image PVC size.
+      diskSize: string | enum="50Gi,100Gi,200Gi" default="50Gi" description="Size of the cloned system disk. Must be at least the 50Gi golden image size - a clone can grow but never shrink."
+      templateImageName: string | enum="windows-10-golden" default="windows-10-golden" description="Golden image PVC in kubermatic-virtualization to clone"
+      # KubeLB's CCM on the service cluster is opt-in - it only publishes Services that
+      # carry its class, so without this the RDP Service stays <pending>. An enum, so the
+      # KDP UI renders it as a dropdown (see README, 'Dropdowns'); `kubelb` is the only
+      # implementation on the cluster today, append values as more appear.
+      #
+      # NOTE: Service.spec.loadBalancerClass is IMMUTABLE. Changing this on an existing
+      # WindowsVirtualMachine makes kro's Service update fail with "may not change once
+      # set"; the VM has to be recreated.
+      loadBalancerClass: string | enum="kubelb" default="kubelb" description="LoadBalancer implementation that publishes RDP for this VM."
+      # kro has no `title=` marker, so the KDP dashboard title-cases these property
+      # names into "Vpc" / "Load Balancer I P". windows/crd-titles.yaml paints the
+      # proper labels onto the generated CRD - keep the two in sync.
+      subnet: string | description="Subnet in this workspace to attach to"
+      vpc: string | description="VPC in this workspace to attach to"
     status:
-      type: object
-      properties:
-        interfaces:
-          type: array
-          expression: ${vmi.status.interfaces}
-          x-kubernetes-preserve-unknown-fields: true
-        currentCPUTopology:
-          type: object
-          expression: ${vmi.status.currentCPUTopology}
-          x-kubernetes-preserve-unknown-fields: true
-        guestOSInfo:
-          type: object
-          expression: ${vmi.status.guestOSInfo}
-          x-kubernetes-preserve-unknown-fields: true
-        machine:
-          type: object
-          expression: ${vmi.status.machine}
-          x-kubernetes-preserve-unknown-fields: true
-        migrationMethod:
-          type: string
-          expression: ${vmi.status.migrationMethod}
-        migrationTransport:
-          type: string
-          expression: ${vmi.status.migrationTransport}
-        phase:
-          type: string
-          expression: ${vmi.status.phase}
-        volumeStatus:
-          type: array
-          expression: ${vmi.status.volumeStatus}
-          x-kubernetes-preserve-unknown-fields: true
-        loadBalancerIP:
-          type: string
-          expression: ${svcStatus.status.loadBalancer.ingress[0].ip}
-        port:
-          type: string
-          expression: ${svcStatus.spec.ports[0].port}
-        nodePort:
-          type: string
-          expression: ${svcStatus.spec.ports[0].nodePort}
+      interfaces: ${vmi.status.interfaces}
+      currentCPUTopology: ${vmi.status.currentCPUTopology}
+      guestOSInfo: ${vmi.status.guestOSInfo}
+      machine: ${vmi.status.machine}
+      migrationMethod: ${vmi.status.migrationMethod}
+      migrationTransport: ${vmi.status.migrationTransport}
+      phase: ${vmi.status.phase}
+      volumeStatus: ${vmi.status.volumeStatus}
+      loadBalancerIP: ${svcStatus.status.loadBalancer.ingress[0].ip}
+      port: ${svcStatus.spec.ports[0].port}
+      nodePort: ${svcStatus.spec.ports[0].nodePort}
+    additionalPrinterColumns:
+      - jsonPath: .metadata.creationTimestamp
+        name: Age
+        type: date
+      - jsonPath: .status.phase
+        name: Phase
+        type: string
+      - jsonPath: .spec.instanceType
+        name: Type
+        type: string
+      - jsonPath: .spec.diskSize
+        name: Disk
+        type: string
+      - jsonPath: .status.loadBalancerIP
+        name: LB IP
+        type: string
 
   resources:
+    # Dependency gate: VM -> Subnet -> Vpc.
+    # Read-only handles on the kube-OVN objects that the Subnet and Vpc kinds already
+    # created on this cluster. Both are cluster-scoped, so they must not set
+    # metadata.namespace - kro refuses to build the RGD otherwise.
+    #
+    # The VM's logical_router / logical_switch annotations below reference these two ids,
+    # and that reference is what makes kro draw a DAG edge. Until both resolve, the VM
+    # node produces no resource and is never created: the instance reports IN_PROGRESS
+    # rather than erroring, and prune stays disabled while anything is unresolved, so an
+    # already-running VM is not destroyed if spec.subnet is later mistyped.
+    #
+    # The names are derived from this object's own workspace label, so one tenant cannot
+    # attach to another tenant's network by guessing its name.
+    - id: tenantVpc
+      externalRef:
+        apiVersion: kubeovn.io/v1
+        kind: Vpc
+        metadata:
+          name: kdp-${schema.metadata.labels['syncagent.kcp.io/remote-object-cluster']}-${schema.spec.vpc}
+
+    - id: tenantSubnet
+      externalRef:
+        apiVersion: kubeovn.io/v1
+        kind: Subnet
+        metadata:
+          name: kdp-${schema.metadata.labels['syncagent.kcp.io/remote-object-cluster']}-${schema.spec.subnet}
+      # Existence alone already gates dependents. This additionally waits for kube-OVN to
+      # allocate the address range. A readyWhen expression may only reference its own node.
+      readyWhen:
+        - ${tenantSubnet.status.v4availableIPrange != ""}
     # Service for RDP and HTTP access
     - id: svc
       template:
@@ -93,7 +101,14 @@ spec:
         metadata:
           name: ${schema.metadata.name}
           namespace: ${schema.metadata.namespace}
+          labels:
+            # Records the network this Service fronts, and - because kro derives its DAG
+            # purely from CEL references, with no explicit dependsOn - this reference is
+            # also what stops the Service being created (and a public IP allocated) for a
+            # VM whose subnet does not exist.
+            kubev.k8c.io/subnet: ${tenantSubnet.metadata.name}
         spec:
+          loadBalancerClass: ${schema.spec.loadBalancerClass}
           ports:
           - name: rdp
             port: 3389
@@ -101,32 +116,6 @@ spec:
             kubevirt.io/vm: ${schema.metadata.name}
           type: LoadBalancer
 
-    - id: clusterrole
-      template:
-        # RBAC: Allow the default SA in win10-golden to clone DataVolumes from vm-images
-        apiVersion: rbac.authorization.k8s.io/v1
-        kind: ClusterRole
-        metadata:
-          name: cdi-clone-${schema.metadata.name}
-        rules:
-          - apiGroups: [ "cdi.kubevirt.io" ]
-            resources: [ "datavolumes/source" ]
-            verbs: [ "create" ]
-    - id: clusterrolebinding
-      template:
-        apiVersion: rbac.authorization.k8s.io/v1
-        kind: RoleBinding
-        metadata:
-          name: cdi-clone-${schema.metadata.name}
-          namespace: build-vm-win10
-        roleRef:
-          apiGroup: rbac.authorization.k8s.io
-          kind: ClusterRole
-          name: cdi-clone-${schema.metadata.name}
-        subjects:
-          - kind: ServiceAccount
-            name: default
-            namespace: ${schema.metadata.namespace}
     # Windows VirtualMachine using a pre-uploaded golden image PVC
     - id: vm
       template:
@@ -149,13 +138,18 @@ spec:
             - metadata:
                 name: winvm-disk-${schema.metadata.name}
               spec:
-                sourceRef:
-                  kind: DataSource
-                  name: ${schema.spec.templateImageName} #windows-10-golden
-                  namespace: build-vm-win10
+                # The golden image PVC lives in kubermatic-virtualization, the same
+                # namespace the VM is synced into, so this is a same-namespace clone
+                # and needs no CDI datavolumes/source grant. It is Block mode; a
+                # filesystem target would fail the clone on lost+found.
+                source:
+                  pvc:
+                    namespace: kubermatic-virtualization
+                    name: ${schema.spec.templateImageName}
                 storage:
                   accessModes:
                     - ReadWriteMany
+                  volumeMode: Block
                   resources:
                     requests:
                       storage: ${schema.spec.diskSize} #50Gi
@@ -167,8 +161,8 @@ spec:
                 kubevirt.io/vm: ${schema.metadata.name}
                 kubevirt.io/os: windows10
               annotations:
-                ovn.kubernetes.io/logical_router: ${schema.spec.vpc}-${schema.metadata.labels['syncagent.kcp.io/remote-object-cluster']}
-                ovn.kubernetes.io/logical_switch: ${schema.spec.subnet}-${schema.metadata.labels['syncagent.kcp.io/remote-object-cluster']}
+                ovn.kubernetes.io/logical_router: ${tenantVpc.metadata.name}
+                ovn.kubernetes.io/logical_switch: ${tenantSubnet.metadata.name}
             spec:
               dnsConfig:
                 nameservers:

@@ -1,0 +1,107 @@
+---
+# The Helm chart (through 0.6.2) creates a leaderelection RoleBinding but not the Role
+# it references. Without this the agent loops on:
+#   RBAC: role "kubev-vms-api-syncagent:leaderelection" not found
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubev-vms-api-syncagent:leaderelection
+  namespace: kubermatic-virtualization
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubev-vms-api-syncagent:leaderelection
+  namespace: kubermatic-virtualization
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubev-vms-api-syncagent:leaderelection
+subjects:
+  - kind: ServiceAccount
+    name: kubev-vms-api-syncagent
+    namespace: kubermatic-virtualization
+
+---
+# The chart's events Role/RoleBinding are not created in this namespace, so the agent
+# logs "events is forbidden" on every leader-election transition.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubev-vms-api-syncagent:events
+  namespace: kubermatic-virtualization
+rules:
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubev-vms-api-syncagent:events
+  namespace: kubermatic-virtualization
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubev-vms-api-syncagent:events
+subjects:
+  - kind: ServiceAccount
+    name: kubev-vms-api-syncagent
+    namespace: kubermatic-virtualization
+
+---
+# Resource access, using KDP's aggregated ClusterRole convention.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubev-vms:kubermatic-virtualization:resources
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubev-vms:kubermatic-virtualization:resources
+subjects:
+  - kind: ServiceAccount
+    name: kubev-vms-api-syncagent
+    namespace: kubermatic-virtualization
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubev-vms:kubermatic-virtualization:resources
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        agent.kdp.k8c.io/namespace: kubermatic-virtualization
+        agent.kdp.k8c.io/name: kubev-vms-api-syncagent
+
+---
+# The agent only touches the kro-generated CRDs plus namespaces and its state Secrets.
+# kro talks to kubevirt.io and kubeovn.io with its own ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubev-vms:kubermatic-virtualization:resources:kubev
+  labels:
+    agent.kdp.k8c.io/namespace: kubermatic-virtualization
+    agent.kdp.k8c.io/name: kubev-vms-api-syncagent
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch, create]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # The whole group rather than a list of kinds: this service owns kubev.k8c.io
+  # outright, and an enumerated list silently breaks whenever an RGD adds or renames
+  # a kind - the only symptom is a "cannot list ... at the cluster scope" line in the
+  # agent log while the kind never appears in KDP.
+  - apiGroups: [kubev.k8c.io]
+    resources: ["*"]
+    verbs: ["*"]

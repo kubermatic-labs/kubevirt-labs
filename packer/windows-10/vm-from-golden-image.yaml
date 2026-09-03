@@ -44,6 +44,10 @@ metadata:
   annotations:
     external-dns.alpha.kubernetes.io/hostname: "win10-demo.tobi.demo.kubermatic.io"
 spec:
+  # KubeLB's CCM is opt-in - it only publishes Services carrying its class.
+  # Without it MetalLB would try, and its pool here is a single address that
+  # svc/dashboard already holds. IMMUTABLE: changing it needs a recreate.
+  loadBalancerClass: kubelb
   ports:
   - name: rdp
     port: 3389

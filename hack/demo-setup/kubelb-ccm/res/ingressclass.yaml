@@ -1,0 +1,14 @@
+# The CCM filters Ingress objects with a plain string compare on
+# spec.ingressClassName == "kubelb" (internal/controllers/ccm/ingress_controller.go);
+# it never reads this object. It exists so `kubectl get ingressclass` documents
+# the option on a cluster that otherwise has none, and so tooling that validates
+# the class name resolves it.
+#
+# Deliberately NOT annotated ingressclass.kubernetes.io/is-default-class: every
+# class-less Ingress on the cluster would silently start getting a public IP.
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: kubelb
+spec:
+  controller: kubelb.k8c.io/ingress-controller

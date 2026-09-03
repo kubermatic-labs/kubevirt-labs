@@ -1,0 +1,37 @@
+# JSON Patch (RFC 6902) that stamps an OpenAPI `title` onto every Subnet spec and status
+# property, so the KDP dashboard stops rendering "Vpc", "Cidr", "Nat Outgoing" and
+# "V4available I Prange". See linux/crd-titles.yaml for the full rationale.
+# Applied by `just sc-titles`.
+
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/cidr/title
+  value: CIDR
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/vpc/title
+  value: VPC
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/natOutgoing/title
+  value: NAT Outgoing
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/egressGateway/title
+  value: Egress Gateway
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/egressExternalSubnet/title
+  value: Egress External Subnet
+
+# --- status ------------------------------------------------------------------
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/state/title
+  value: State
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/title
+  value: Conditions
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/v4availableIPrange/title
+  value: Available IPv4 Range
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/egressGatewayReady/title
+  value: Egress Gateway Ready
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/egressGatewayExternalIP/title
+  value: Egress Gateway External IP

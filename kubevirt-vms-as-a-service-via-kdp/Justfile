@@ -1,0 +1,306 @@
+# KubeVirt VMs as a Service via KDP
+#
+# Two clusters are involved, and every target is prefixed by the side it touches:
+#
+#   kdp-*    the KDP/kcp organization workspace that offers the service
+#   sc-*     the service cluster that actually runs the VMs
+#   demo-*   consumer objects, applied as a platform user would
+#   show-*   read-only inspection
+#
+# Unprefixed targets are whole-lifecycle: preflight, deploy, clean.
+# Run `just deploy` for everything, or step through the targets in order.
+
+set shell := ["bash", "-uc"]
+
+# --- KDP side -----------------------------------------------------------------
+kdp_kubeconfig := justfile_directory() + "/../kdp-demo-kubeconfig"
+workspace      := "root:tobi-org"
+service        := "kubev.k8c.io"
+
+# --- service cluster side -----------------------------------------------------
+sc_kubeconfig  := "/Users/tobi/gd-k8c/kubermatic-dc/kubeconfigs/demo-envs-dc-kubevirt-kubeconfig"
+namespace      := "kubermatic-virtualization"
+kro_namespace  := "kro-system"
+kro_version    := "0.9.3"
+release        := "kubev-vms"
+chart_version  := "0.6.2"   # appVersion v0.7.0
+
+kdp := "KUBECONFIG=" + kdp_kubeconfig + " kubectl"
+sc  := "KUBECONFIG=" + sc_kubeconfig + " kubectl"
+
+default:
+    @just --list --list-heading $'KubeVirt VMs as a Service via KDP\n\n'
+
+# ==============================================================================
+# lifecycle
+# ==============================================================================
+
+# Verify every prerequisite on both clusters before changing anything.
+[group('lifecycle')]
+preflight:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    fail=0
+    check() { # name, command
+      if eval "$2" >/dev/null 2>&1; then printf '  ok    %s\n' "$1"; else printf '  MISS  %s\n' "$1"; fail=1; fi
+    }
+    echo "KDP ({{workspace}}):"
+    check "reachable"                "{{kdp}} get ns default --request-timeout=20s"
+    check "can create Services"      "{{kdp}} auth can-i create services.core.kdp.k8c.io --request-timeout=20s | grep -qx yes"
+    echo "service cluster:"
+    check "reachable"                "{{sc}} get ns {{namespace}} --request-timeout=20s"
+    check "kubevirt"                 "{{sc}} get crd virtualmachines.kubevirt.io"
+    check "cdi datavolumes"          "{{sc}} get crd datavolumes.cdi.kubevirt.io"
+    check "kube-ovn vpcs"            "{{sc}} get crd vpcs.kubeovn.io"
+    check "kube-ovn subnets"         "{{sc}} get crd subnets.kubeovn.io"
+    check "storageclass kubev-vms"   "{{sc}} get sc kubev-vms"
+    check "windows golden image pvc" "{{sc}} -n {{namespace}} get pvc windows-10-golden"
+    check "kro installed"            "{{sc}} get crd resourcegraphdefinitions.kro.run"
+    echo
+    if [ "$fail" -ne 0 ]; then
+      echo "preflight incomplete - run 'just sc-kro' if kro is the only thing missing"; exit 1
+    fi
+    echo "preflight passed"
+
+# Install and wire up the whole service, in dependency order.
+[group('lifecycle')]
+deploy: sc-kro kdp-service sc-agent-secret sc-agent sc-rgds sc-publish
+    @echo
+    @echo "deployed - 'just kdp-bind' to consume it, 'just show-status' to check"
+
+# Remove the service from both clusters. Leaves kro and pre-existing VMs alone.
+[group('lifecycle')]
+clean: demo-clean
+    -{{kdp}} delete apibinding {{service}} --ignore-not-found
+    -{{sc}} delete -f vpc-networking/published-resource-vpc.yaml --ignore-not-found
+    -{{sc}} delete -f vpc-networking/published-resource-subnet.yaml --ignore-not-found
+    -{{sc}} delete -f linux/published-resource-vm.yaml --ignore-not-found
+    -{{sc}} delete -f windows/published-resource-vm.yaml --ignore-not-found
+    -KUBECONFIG={{sc_kubeconfig}} helm uninstall {{release}} -n {{namespace}}
+    -{{sc}} delete -f service-cluster/rbac.yaml --ignore-not-found
+    -{{sc}} -n {{namespace}} delete secret kcp-kubeconfig --ignore-not-found
+    -{{sc}} delete -f vpc-networking/rgd-vpc.yaml -f vpc-networking/rgd-subnet.yaml -f linux/rgd-vm.yaml -f windows/rgd-vm.yaml --ignore-not-found
+    # kro does NOT delete the CRDs its RGDs created; leftovers block a later re-apply.
+    -{{sc}} delete crd linuxvirtualmachines.kubev.k8c.io windowsvirtualmachines.kubev.k8c.io vpcs.kubev.k8c.io subnets.kubev.k8c.io --ignore-not-found
+    -{{sc}} delete -f service-cluster/kro-rbac.yaml --ignore-not-found
+    -{{kdp}} delete -f kdp/public-rbac.yaml --ignore-not-found
+    -{{kdp}} delete -f kdp/service.yaml --ignore-not-found
+    -{{kdp}} delete -f kdp/logo-configmap.yaml --ignore-not-found
+
+# ==============================================================================
+# kdp-*  the KDP workspace that offers the service
+# ==============================================================================
+
+# Create the KDP Service; KDP then generates the APIExport and the agent kubeconfig.
+[group('kdp')]
+kdp-service:
+    {{kdp}} apply -f kdp/logo-configmap.yaml
+    {{kdp}} apply -f kdp/service.yaml
+    @echo "waiting for KDP to generate the APIExport ..."
+    @for i in $(seq 1 30); do \
+      n=$({{kdp}} get services.core.kdp.k8c.io {{service}} -o jsonpath='{.status.apiExport.name}' 2>/dev/null); \
+      if [ -n "$n" ]; then echo "APIExport: $n"; exit 0; fi; sleep 2; done; \
+      echo "timed out waiting for status.apiExport"; exit 1
+
+# Bind the service into the workspace so its kinds become usable.
+[group('kdp')]
+kdp-bind:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cat <<EOF | {{kdp}} apply -f -
+    apiVersion: apis.kcp.io/v1alpha2
+    kind: APIBinding
+    metadata:
+      name: {{service}}
+    spec:
+      reference:
+        export:
+          name: {{service}}
+          path: {{workspace}}
+    EOF
+    {{kdp}} get apibindings {{service}}
+
+# Defaults to the stored transparent artwork in kdp/logo-src.png.
+# Regenerate kdp/logo.png and the logo ConfigMap from a source image, then push it.
+[group('kdp')]
+kdp-logo image="kdp/logo-src.png" size="192":
+    kdp/render-logo.sh "{{image}}" "{{size}}"
+    {{kdp}} apply -f kdp/logo-configmap.yaml
+
+# Grants `get` on the Service and `bind` on the APIExport to system:authenticated.
+# Let other organizations see this service in their catalog and bind it.
+[group('kdp')]
+kdp-publish:
+    {{kdp}} apply -f kdp/public-rbac.yaml
+    {{kdp}} get clusterrolebinding {{service}}:public
+
+# Revoke the cross-org grant; the service goes back to being visible only in this workspace.
+[group('kdp')]
+kdp-unpublish:
+    -{{kdp}} delete -f kdp/public-rbac.yaml --ignore-not-found
+
+# Show what KDP generated for the service.
+[group('kdp')]
+kdp-show:
+    {{kdp}} get services.core.kdp.k8c.io {{service}} -o yaml
+    -{{kdp}} get apiexports.apis.kcp.io {{service}} -o wide
+    -{{kdp}} get apiexportendpointslices.apis.kcp.io
+
+# ==============================================================================
+# sc-*  the service cluster that runs the VMs
+# ==============================================================================
+
+# kro's OCI helm chart is not publicly readable, so the pinned release manifest is
+# used instead. It already targets kro-system and pulls from registry.k8s.io.
+# Install the kro operator and grant it the API groups these RGDs touch.
+[group('service cluster')]
+sc-kro:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    url="https://github.com/kro-run/kro/releases/download/v{{kro_version}}/kro-core-install-manifests.yaml"
+    echo "installing kro v{{kro_version}}"
+    {{sc}} create namespace {{kro_namespace}} --dry-run=client -o yaml | {{sc}} apply -f -
+    curl -fsSL "$url" | {{sc}} apply --server-side --force-conflicts -f -
+    # kro ships RBAC for its own CRDs only; grant it the groups these RGDs touch.
+    {{sc}} apply -f service-cluster/kro-rbac.yaml
+    {{sc}} -n {{kro_namespace}} rollout status deploy/kro --timeout=300s
+    {{sc}} -n {{kro_namespace}} rollout restart deploy/kro
+    {{sc}} -n {{kro_namespace}} rollout status deploy/kro --timeout=300s
+
+# Copy the kubeconfig KDP generated into a Secret on the service cluster.
+[group('service cluster')]
+sc-agent-secret:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sname=$({{kdp}} get services.core.kdp.k8c.io {{service}} -o jsonpath='{.spec.kubeconfig.name}')
+    sns=$({{kdp}} get services.core.kdp.k8c.io {{service}} -o jsonpath='{.spec.kubeconfig.namespace}')
+    if [ -z "$sname" ] || [ -z "$sns" ]; then
+      echo "KDP has not populated spec.kubeconfig yet; re-run 'just kdp-service'"; exit 1
+    fi
+    echo "waiting for KDP to write the kubeconfig into $sns/$sname ..."
+    tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+    for i in $(seq 1 60); do
+      {{kdp}} -n "$sns" get secret "$sname" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "$tmp" || true
+      [ -s "$tmp" ] && break
+      sleep 3
+    done
+    [ -s "$tmp" ] || { echo "timed out waiting for the generated kubeconfig in $sns/$sname"; exit 1; }
+    grep -q 'client-certificate-data' "$tmp" || { echo "secret does not look like an agent kubeconfig"; exit 1; }
+    {{sc}} -n {{namespace}} create secret generic kcp-kubeconfig \
+      --from-file=kubeconfig="$tmp" --dry-run=client -o yaml | {{sc}} apply -f -
+    echo "secret kcp-kubeconfig created in {{namespace}}"
+
+# Install the api-syncagent on the service cluster.
+[group('service cluster')]
+sc-agent:
+    helm repo add kcp https://kcp-dev.github.io/helm-charts >/dev/null 2>&1 || true
+    helm repo update kcp >/dev/null
+    # RBAC first: the chart binds a leaderelection Role it never creates, so an agent
+    # started before this lands spends its first seconds failing leader election.
+    {{sc}} apply -f service-cluster/rbac.yaml
+    KUBECONFIG={{sc_kubeconfig}} helm upgrade --install {{release}} kcp/api-syncagent \
+      --namespace {{namespace}} \
+      --version {{chart_version}} \
+      --values service-cluster/syncagent-values.yaml \
+      --wait --timeout 5m
+    # The chart names the Deployment after the release; only the ServiceAccount
+    # carries the -api-syncagent suffix.
+    {{sc}} -n {{namespace}} rollout status deploy/{{release}} --timeout=180s
+
+# Apply the kro ResourceGraphDefinitions (these create the kubev.k8c.io CRDs).
+[group('service cluster')]
+sc-rgds: && sc-titles
+    {{sc}} apply -f vpc-networking/rgd-vpc.yaml
+    {{sc}} apply -f vpc-networking/rgd-subnet.yaml
+    {{sc}} apply -f linux/rgd-vm.yaml
+    {{sc}} apply -f windows/rgd-vm.yaml
+    @echo "waiting for RGDs to become Active ..."
+    -{{sc}} wait --for=jsonpath='{.status.state}'=Active resourcegraphdefinition --all --timeout=120s
+    {{sc}} get resourcegraphdefinitions
+
+# Stamp OpenAPI `title` onto the generated CRDs so the KDP dashboard shows "OS", "VPC"
+# and "SSH Public Key" instead of the title-cased property names "Os", "Vpc", "Ssh
+# Public Key". kro has no `title=` simple-schema marker, so the titles are painted onto
+# the CRDs it generated - see the header of linux/crd-titles.yaml for why that sticks.
+# Runs automatically after sc-rgds; run `sc-agent-restart` afterwards to republish.
+[group('service cluster')]
+sc-titles:
+    {{sc}} patch crd linuxvirtualmachines.kubev.k8c.io   --type=json --patch-file=linux/crd-titles.yaml
+    {{sc}} patch crd windowsvirtualmachines.kubev.k8c.io --type=json --patch-file=windows/crd-titles.yaml
+    {{sc}} patch crd vpcs.kubev.k8c.io                   --type=json --patch-file=vpc-networking/crd-titles-vpc.yaml
+    {{sc}} patch crd subnets.kubev.k8c.io                --type=json --patch-file=vpc-networking/crd-titles-subnet.yaml
+
+# Apply the PublishedResources so the agent exposes them in KDP.
+[group('service cluster')]
+sc-publish:
+    {{sc}} apply -f vpc-networking/published-resource-vpc.yaml
+    {{sc}} apply -f vpc-networking/published-resource-subnet.yaml
+    {{sc}} apply -f linux/published-resource-vm.yaml
+    {{sc}} apply -f windows/published-resource-vm.yaml
+    {{sc}} get publishedresources
+
+# Restart the agent, e.g. after changing naming rules or a PublishedResource.
+[group('service cluster')]
+sc-agent-restart:
+    {{sc}} -n {{namespace}} rollout restart deploy/{{release}}
+    {{sc}} -n {{namespace}} rollout status deploy/{{release}} --timeout=180s
+
+# ==============================================================================
+# demo-*  consumer objects, applied the way a platform user would
+# ==============================================================================
+
+# Apply the Linux example (Vpc + Subnet + LinuxVirtualMachine) in namespace dev.
+[group('demo')]
+demo-linux:
+    -{{kdp}} create ns dev
+    {{kdp}} apply -f linux/example.yaml
+
+# Apply the Windows example in namespace windows-aas.
+[group('demo')]
+demo-windows:
+    -{{kdp}} create ns windows-aas
+    {{kdp}} apply -f windows/example.windows.yaml
+
+# Remove the consumer objects so the agent tears down the real infrastructure.
+[group('demo')]
+demo-clean:
+    -{{kdp}} delete -f linux/example.yaml --ignore-not-found --timeout=120s
+    -{{kdp}} delete -f windows/example.windows.yaml --ignore-not-found --timeout=120s
+
+# ==============================================================================
+# show-*  read-only inspection
+# ==============================================================================
+
+# Both sides at a glance: service, agent, kro, synced objects, real infrastructure.
+[group('inspect')]
+show-status:
+    @echo "═══ KDP: {{workspace}} ═══"
+    -{{kdp}} get services.core.kdp.k8c.io
+    -{{kdp}} get apibindings
+    @echo
+    @echo "═══ service cluster: agent ═══"
+    -{{sc}} -n {{namespace}} get deploy,pod -l app.kubernetes.io/instance={{release}}
+    -{{sc}} get publishedresources
+    @echo
+    @echo "═══ service cluster: kro ═══"
+    -{{sc}} get resourcegraphdefinitions
+    @echo
+    @echo "═══ synced objects in {{namespace}} ═══"
+    -{{sc}} -n {{namespace}} get vpcs.kubev.k8c.io,subnets.kubev.k8c.io,linuxvirtualmachines.kubev.k8c.io,windowsvirtualmachines.kubev.k8c.io
+    @echo
+    @echo "═══ resulting infrastructure ═══"
+    -{{sc}} get vpc.kubeovn.io,subnet.kubeovn.io
+    -{{sc}} -n {{namespace}} get vm.kubevirt.io
+
+# What the platform user sees in the workspace, including Ready conditions.
+[group('inspect')]
+show-consumer:
+    -{{kdp}} get vpcs,subnets,linuxvirtualmachines,windowsvirtualmachines -A
+
+[group('inspect')]
+show-agent-logs:
+    {{sc}} -n {{namespace}} logs deploy/{{release}} --tail=100 -f
+
+[group('inspect')]
+show-kro-logs:
+    {{sc}} -n {{kro_namespace}} logs deploy/kro --tail=100 -f

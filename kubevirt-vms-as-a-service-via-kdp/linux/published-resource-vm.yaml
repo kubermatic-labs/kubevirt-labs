@@ -2,12 +2,12 @@
 apiVersion: syncagent.kcp.io/v1alpha1
 kind: PublishedResource
 metadata:
-  name: publish-kubev-windows-vms
+  name: publish-kubev-linux-vms
   labels:
     kdp.k8c.io/syncagent: kubev-vms
 spec:
   resource:
-    kind: WindowsVirtualMachine
+    kind: LinuxVirtualMachine
     apiGroup: kubev.k8c.io
     versions: [v1alpha1]
   naming:

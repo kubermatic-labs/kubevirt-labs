@@ -1,8 +1,10 @@
 ---
+# Applied by a platform user inside their KDP workspace.
 kind: Vpc
-apiVersion: virtualization.k8c.io/v1alpha1
+apiVersion: kubev.k8c.io/v1alpha1
 metadata:
   name: ubuntu-vm
+  namespace: dev
   annotations:
     ovn.kubernetes.io/vpc_lb: "off"
 spec:
@@ -13,23 +15,26 @@ spec:
 
 ---
 kind: Subnet
-apiVersion: virtualization.k8c.io/v1alpha1
+apiVersion: kubev.k8c.io/v1alpha1
 metadata:
   name: ubuntu-vm-subnet
+  namespace: dev
 spec:
   cidr: 10.0.0.0/24
   vpc: ubuntu-vm
   natOutgoing: true
 
 ---
-kind: VirtualMachine
+kind: LinuxVirtualMachine
 apiVersion: kubev.k8c.io/v1alpha1
 metadata:
   name: ubuntu-kcp-vm
   namespace: dev
 spec:
-  cpu: 2
-  memory: 4Gi
+  os: ubuntu
+  image: quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64
+  instanceType: u1.large
   diskSize: 20Gi
+  loadBalancerClass: kubelb
   subnet: ubuntu-vm-subnet
   vpc: ubuntu-vm

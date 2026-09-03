@@ -1,0 +1,360 @@
+---
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  # Creates the CRD linuxvirtualmachines.kubev.k8c.io
+  name: linuxvirtualmachines.kubev.k8c.io
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: LinuxVirtualMachine
+    group: kubev.k8c.io
+    spec:
+      # The KDP create form renders an enum as a dropdown. It has no way to filter
+      # one dropdown by the value of another, so os and image are independent
+      # selections and the description spells out which image belongs to which os.
+      os: string | enum="ubuntu,flatcar" default="ubuntu" description="Guest operating system. Picks the KubeVirt preference and the cloud-init flavour (Ubuntu gets NoCloud cloud-config, Flatcar gets ConfigDrive Ignition)."
+      image: string | enum="quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64,quay.io/kubermatic-virt-disks/ubuntu:22.04,quay.io/kubermatic-virt-disks/flatcar:4593.2.3-amd64" default="quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64" description="Container disk to import. Pick an ubuntu:* image for os=ubuntu and the flatcar:* image for os=flatcar."
+      instanceType: string | enum="u1.nano,u1.micro,u1.small,u1.medium,u1.2xmedium,u1.large,u1.xlarge,u1.2xlarge,u1.4xlarge,u1.8xlarge" default="u1.medium" description="VM size. Every u1.* instance type available on the cluster."
+      diskSize: string | default="20Gi" description="Root disk size, e.g. 20Gi"
+      # KubeLB's CCM on the service cluster is opt-in - it only publishes Services that
+      # carry its class, so without this the SSH Service stays <pending>. An enum, so the
+      # KDP UI renders it as a dropdown (see README, 'Dropdowns'); `kubelb` is the only
+      # implementation on the cluster today, append values as more appear.
+      #
+      # NOTE: Service.spec.loadBalancerClass is IMMUTABLE. Changing this on an existing
+      # LinuxVirtualMachine makes kro's Service update fail with "may not change once
+      # set"; the VM has to be recreated.
+      loadBalancerClass: string | enum="kubelb" default="kubelb" description="LoadBalancer implementation that publishes SSH for this VM."
+      sshPublicKey: string | default="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBjVU0Z7gpW4lqQQEA1rGqQIZCAmrCo9fVSZyj/DCwRt fog@local" description="Public key authorised for the kkp user (Ubuntu) / core user (Flatcar)."
+      # kro has no `title=` marker, so the KDP dashboard title-cases these property
+      # names into "Os" / "Ssh Public Key" / "Vpc". linux/crd-titles.yaml paints the
+      # proper labels onto the generated CRD - keep the two in sync.
+      subnet: string | description="Subnet in this workspace to attach to"
+      vpc: string | description="VPC in this workspace to attach to"
+    status:
+      interfaces: ${vmi.status.interfaces}
+      currentCPUTopology: ${vmi.status.currentCPUTopology}
+      guestOSInfo: ${vmi.status.guestOSInfo}
+      machine: ${vmi.status.machine}
+      migrationMethod: ${vmi.status.migrationMethod}
+      migrationTransport: ${vmi.status.migrationTransport}
+      phase: ${vmi.status.phase}
+      volumeStatus: ${vmi.status.volumeStatus}
+      loadBalancerIP: ${svcStatus.status.loadBalancer.ingress[0].ip}
+      port: ${svcStatus.spec.ports[0].port}
+      nodePort: ${svcStatus.spec.ports[0].nodePort}
+    additionalPrinterColumns:
+      - jsonPath: .metadata.creationTimestamp
+        name: Age
+        type: date
+      - jsonPath: .status.phase
+        name: Phase
+        type: string
+      - jsonPath: .spec.os
+        name: OS
+        type: string
+      - jsonPath: .spec.instanceType
+        name: Type
+        type: string
+      - jsonPath: .spec.diskSize
+        name: Disk
+        type: string
+      - jsonPath: .status.loadBalancerIP
+        name: SSH IP
+        type: string
+
+  resources:
+    # Dependency gate: VM -> Subnet -> Vpc.
+    # Read-only handles on the kube-OVN objects that the Subnet and Vpc kinds already
+    # created on this cluster. Both are cluster-scoped, so they must not set
+    # metadata.namespace - kro refuses to build the RGD otherwise.
+    #
+    # The VM's logical_router / logical_switch annotations below reference these two ids,
+    # and that reference is what makes kro draw a DAG edge. Until both resolve, the VM
+    # node produces no resource and is never created: the instance reports IN_PROGRESS
+    # rather than erroring, and prune stays disabled while anything is unresolved, so an
+    # already-running VM is not destroyed if spec.subnet is later mistyped.
+    #
+    # The names are derived from this object's own workspace label, so one tenant cannot
+    # attach to another tenant's network by guessing its name.
+    - id: tenantVpc
+      externalRef:
+        apiVersion: kubeovn.io/v1
+        kind: Vpc
+        metadata:
+          name: kdp-${schema.metadata.labels['syncagent.kcp.io/remote-object-cluster']}-${schema.spec.vpc}
+
+    - id: tenantSubnet
+      externalRef:
+        apiVersion: kubeovn.io/v1
+        kind: Subnet
+        metadata:
+          name: kdp-${schema.metadata.labels['syncagent.kcp.io/remote-object-cluster']}-${schema.spec.subnet}
+      # Existence alone already gates dependents. This additionally waits for kube-OVN to
+      # allocate the address range. A readyWhen expression may only reference its own node.
+      readyWhen:
+        - ${tenantSubnet.status.v4availableIPrange != ""}
+    # SSH reachability, mirroring the Windows kind's RDP Service. The selector matches
+    # the label the VM puts on its virt-launcher pod, so it works for both OS branches.
+    - id: svc
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+          labels:
+            # Records the network this Service fronts, and - because kro derives its DAG
+            # purely from CEL references, with no explicit dependsOn - this reference is
+            # also what stops the Service being created (and a public IP allocated) for a
+            # VM whose subnet does not exist.
+            kubev.k8c.io/subnet: ${tenantSubnet.metadata.name}
+        spec:
+          loadBalancerClass: ${schema.spec.loadBalancerClass}
+          ports:
+          - name: ssh
+            port: 22
+          selector:
+            kubevirt.io/vm: ${schema.metadata.name}
+          type: LoadBalancer
+
+    # Ubuntu and Flatcar are two resources rather than one templated VM because the
+    # two guests need different cloud-init mechanisms: Ubuntu reads NoCloud
+    # cloud-config, Flatcar reads Ignition off a ConfigDrive. includeWhen makes
+    # exactly one of them exist, and both use the same object name, so the vmi
+    # externalRef and the status block below work either way.
+    - id: vmUbuntu
+      includeWhen:
+        - ${schema.spec.os == "ubuntu"}
+      template:
+        apiVersion: kubevirt.io/v1
+        kind: VirtualMachine
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+        spec:
+          running: true
+          instancetype:
+            kind: VirtualMachineClusterInstancetype
+            name: ${schema.spec.instanceType}
+          preference:
+            kind: VirtualMachineClusterPreference
+            name: ubuntu
+          dataVolumeTemplates:
+          - metadata:
+              creationTimestamp: null
+              name: ${schema.metadata.name}-disk0
+            spec:
+              source:
+                registry:
+                  url: docker://${schema.spec.image}
+              storage:
+                accessModes:
+                - ReadWriteOnce
+                resources:
+                  requests:
+                    storage: ${schema.spec.diskSize}
+                storageClassName: kubev-vms
+          template:
+            metadata:
+              creationTimestamp: null
+              labels:
+                kubevirt.io/vm: ${schema.metadata.name}
+              annotations:
+                ovn.kubernetes.io/logical_router: ${tenantVpc.metadata.name}
+                ovn.kubernetes.io/logical_switch: ${tenantSubnet.metadata.name}
+                kubevirt.io/allow-pod-bridge-network-live-migration: "true"
+            spec:
+              domain:
+                devices:
+                  networkInterfaceMultiqueue: true
+                  disks:
+                  - name: datavolumedisk
+                    disk:
+                      bus: virtio
+                  - disk:
+                      bus: virtio
+                    name: cloudinitdisk
+                  interfaces:
+                  - bridge: {}
+                    name: default
+                machine:
+                  type: q35
+              affinity: {}
+              architecture: amd64
+              # The VM sits on a per-tenant kube-OVN VPC, so the cluster DNS service IP
+              # is not routable from inside it. Without this the guest gets 10.96.0.10,
+              # apt cannot resolve, and the qemu-guest-agent install in cloud-init below
+              # silently never happens. Same reason the Windows kind pins DNS.
+              dnsPolicy: None
+              dnsConfig:
+                nameservers:
+                - 8.8.8.8
+              evictionStrategy: External
+              networks:
+              - name: default
+                pod: {}
+              terminationGracePeriodSeconds: 30
+              volumes:
+              - dataVolume:
+                  name: ${schema.metadata.name}-disk0
+                name: datavolumedisk
+              - cloudInitNoCloud:
+                  # qemu-guest-agent is what makes .status.guestOSInfo and the reported
+                  # IPs show up in KDP, and what lets KubeVirt freeze/thaw the filesystem
+                  # for snapshots - without it the VM runs but reports almost nothing.
+                  userData: |
+                    #cloud-config
+                    users:
+                    - groups: users,admin,docker,sudo
+                      name: kkp
+                      ssh_authorized_keys:
+                      - ${schema.spec.sshPublicKey}
+                      lock-passwd: true
+                      ssh_pwauth: False
+                      chpasswd: { expire: False }
+                      shell: /bin/bash
+                      sudo: ALL=(ALL) NOPASSWD:ALL
+                    # Kept alongside the key-only kkp user so the serial/VNC console
+                    # still has a way in during demos.
+                    - groups: users, admin
+                      name: kubevirt
+                      passwd: $6$0D3RNnngtIZSq0C6$O.rkXQNZhKRWOBDJAYQCLeNAeTQKjmKdm6ZdtRf1QONDpak5wpgvhO9AtdMB4czCKE4/TYvsZ6Bwc/ygiD29r1
+                      lock-passwd: false
+                      ssh_pwauth: True
+                      chpasswd: { expire: False }
+                      shell: /bin/bash
+                      sudo: ALL=(ALL) NOPASSWD:ALL
+                    package_update: true
+                    packages:
+                      - qemu-guest-agent
+                    runcmd:
+                      - systemctl enable --now qemu-guest-agent
+                name: cloudinitdisk
+
+    - id: vmFlatcar
+      includeWhen:
+        - ${schema.spec.os == "flatcar"}
+      template:
+        apiVersion: kubevirt.io/v1
+        kind: VirtualMachine
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+        spec:
+          running: true
+          instancetype:
+            kind: VirtualMachineClusterInstancetype
+            name: ${schema.spec.instanceType}
+          preference:
+            # No flatcar preference ships with KubeVirt; the generic linux one fits.
+            kind: VirtualMachineClusterPreference
+            name: linux
+          dataVolumeTemplates:
+          - metadata:
+              creationTimestamp: null
+              name: ${schema.metadata.name}-disk0
+            spec:
+              source:
+                registry:
+                  url: docker://${schema.spec.image}
+              storage:
+                accessModes:
+                - ReadWriteOnce
+                resources:
+                  requests:
+                    storage: ${schema.spec.diskSize}
+                storageClassName: kubev-vms
+          template:
+            metadata:
+              creationTimestamp: null
+              labels:
+                kubevirt.io/vm: ${schema.metadata.name}
+              annotations:
+                ovn.kubernetes.io/logical_router: ${tenantVpc.metadata.name}
+                ovn.kubernetes.io/logical_switch: ${tenantSubnet.metadata.name}
+                kubevirt.io/allow-pod-bridge-network-live-migration: "true"
+            spec:
+              domain:
+                devices:
+                  networkInterfaceMultiqueue: true
+                  disks:
+                  - name: datavolumedisk
+                    disk:
+                      bus: virtio
+                  - disk:
+                      bus: virtio
+                    name: cloudinitdisk
+                  interfaces:
+                  - bridge: {}
+                    name: default
+                machine:
+                  type: q35
+              affinity: {}
+              architecture: amd64
+              # The VM sits on a per-tenant kube-OVN VPC, so the cluster DNS service IP
+              # is not routable from inside it. Without this the guest gets 10.96.0.10,
+              # apt cannot resolve, and the qemu-guest-agent install in cloud-init below
+              # silently never happens. Same reason the Windows kind pins DNS.
+              dnsPolicy: None
+              dnsConfig:
+                nameservers:
+                - 8.8.8.8
+              evictionStrategy: External
+              networks:
+              - name: default
+                pod: {}
+              terminationGracePeriodSeconds: 30
+              volumes:
+              - dataVolume:
+                  name: ${schema.metadata.name}-disk0
+                name: datavolumedisk
+              - cloudInitConfigDrive:
+                  # Flatcar is Ignition-only and has no package manager, so the guest
+                  # agent cannot be apt-installed the way the Ubuntu branch does it.
+                  # Flatcar ships the binary in the image; the unit below just enables
+                  # it, and ConditionPathExists makes it a no-op on an image that does
+                  # not, instead of a failed unit on every boot.
+                  userData: |
+                    {
+                      "ignition": { "version": "3.3.0" },
+                      "passwd": {
+                        "users": [
+                          {
+                            "name": "core",
+                            "sshAuthorizedKeys": [ "${schema.spec.sshPublicKey}" ],
+                            "passwordHash": "$6$0D3RNnngtIZSq0C6$O.rkXQNZhKRWOBDJAYQCLeNAeTQKjmKdm6ZdtRf1QONDpak5wpgvhO9AtdMB4czCKE4/TYvsZ6Bwc/ygiD29r1",
+                            "groups": [ "sudo", "docker" ]
+                          }
+                        ]
+                      },
+                      "systemd": {
+                        "units": [
+                          {
+                            "name": "qemu-guest-agent.service",
+                            "enabled": true,
+                            "contents": "[Unit]\nDescription=QEMU Guest Agent\nConditionPathExists=/usr/bin/qemu-ga\n\n[Service]\nExecStart=/usr/bin/qemu-ga\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+                          }
+                        ]
+                      }
+                    }
+                name: cloudinitdisk
+
+    # Read-only handle on the Service, for the loadBalancerIP/port/nodePort status.
+    - id: svcStatus
+      externalRef:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+
+    # Read-only handle on the VirtualMachineInstance, for the status block above.
+    - id: vmi
+      externalRef:
+        apiVersion: kubevirt.io/v1
+        kind: VirtualMachineInstance
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}

@@ -1,0 +1,77 @@
+# JSON Patch (RFC 6902) that stamps an OpenAPI `title` onto every WindowsVirtualMachine
+# spec and status property, so the KDP dashboard stops title-casing the property names
+# into "Vpc" / "Ssh Public Key" / "Load Balancer I P".
+#
+# See linux/crd-titles.yaml for the full rationale: kro has no `title=` marker, the
+# dashboard only derives a label when the schema has no title, and kro's CRD comparator
+# ignores Title so the patch survives. Applied by `just sc-titles`.
+
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/instanceType/title
+  value: Instance Type
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/diskSize/title
+  value: Disk Size
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/templateImageName/title
+  value: Template Image Name
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/loadBalancerClass/title
+  value: Load Balancer Class
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/subnet/title
+  value: Subnet
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/vpc/title
+  value: VPC
+
+# --- status ------------------------------------------------------------------
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/phase/title
+  value: Phase
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/state/title
+  value: State
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/machine/title
+  value: Machine
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/interfaces/title
+  value: Interfaces
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/title
+  value: Conditions
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/currentCPUTopology/title
+  value: Current CPU Topology
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/guestOSInfo/title
+  value: Guest OS Info
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/migrationMethod/title
+  value: Migration Method
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/migrationTransport/title
+  value: Migration Transport
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/volumeStatus/title
+  value: Volume Status
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/loadBalancerIP/title
+  value: Load Balancer IP
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/port/title
+  value: Port
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/nodePort/title
+  value: Node Port
+
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/interfaces/items/properties/ipAddress/title
+  value: IP Address
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/interfaces/items/properties/ipAddresses/title
+  value: IP Addresses
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/interfaces/items/properties/mac/title
+  value: MAC

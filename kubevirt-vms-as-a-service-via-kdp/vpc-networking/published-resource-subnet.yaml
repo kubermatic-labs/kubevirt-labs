@@ -3,11 +3,15 @@ apiVersion: syncagent.kcp.io/v1alpha1
 kind: PublishedResource
 metadata:
   name: publish-kubev-subnets
+  labels:
+    kdp.k8c.io/syncagent: kubev-vms
 spec:
-   resource:
-     kind: Subnet
-     apiGroup: virtualization.k8c.io
-     version: "v1alpha1"
-   naming:
-     namespace: '{{ .ClusterName }}-{{ .Object.metadata.namespace }}'
-     name: '{{ .Object.metadata.name }}'
+  resource:
+    kind: Subnet
+    apiGroup: kubev.k8c.io
+    versions: [v1alpha1]
+  # The kdp- prefix is required: kube-OVN enforces '^[^0-9]' on Subnet names and
+  # kcp cluster names frequently start with a digit.
+  naming:
+    namespace: kubermatic-virtualization
+    name: 'kdp-{{ .ClusterName }}-{{ .Object.metadata.name }}'

@@ -1,0 +1,57 @@
+# KubeLB CCM (Community Edition) for the KubeVirt demo cluster `kubev-cluster`.
+#
+# Registers as tenant `kubev-vm-ccm` against the KubeLB manager (EE v1.5.0)
+# behind kubelb.kkp.demo.kubermatic.io. Rendered by helmfile.yaml.gotmpl.
+
+# CE image quay.io/kubermatic/kubelb-ccm is PUBLIC, so no pull secret. The EE
+# image (quay.io/kubermatic/kubelb-ccm-ee) is not - it 401s anonymously and
+# would need the kubermatic-quay.io regcred the fog environment carries.
+imagePullSecrets: []
+
+kubelb:
+  # Secret in ns/kubelb holding the manager kubeconfig under key `kubelb`.
+  # Created by presync.sh from kubelb-kubev-vm-ccm.kubeconfig - never committed.
+  clusterSecretName: kubelb-cluster
+
+  # Must match the Tenant on the manager. Its namespace there is
+  # `tenant-kubev-vm-ccm`; the CCM accepts the bare name or the tenant- prefix.
+  tenantName: kubev-vm-ccm
+
+  # kubev-cluster nodes carry an InternalIP only (10.32.0.0/24) and no
+  # providerID, so the default ExternalIP would resolve to an empty address list
+  # and every LoadBalancer would come up with no backends.
+  nodeAddressType: InternalIP
+
+  # ---------------------------------------------------------------------------
+  # Scope: OPT-IN. Only Services that set `spec.loadBalancerClass: kubelb` are
+  # published. The cluster already has 17 LoadBalancer Services sitting
+  # <pending> (12 of them kubevirt-ccm mirrors for KKP user clusters, plus the
+  # RDP/SSH services of the demo VMs); the default `false` would hand all of
+  # them a public IP on the first sync.
+  #
+  # NOTE: spec.loadBalancerClass is IMMUTABLE. Existing Services cannot be
+  # opted in with `kubectl patch` - the API server rejects it with
+  # "may not change once set". They have to be deleted and recreated.
+  # ---------------------------------------------------------------------------
+  useLoadBalancerClass: true
+
+  # ---------------------------------------------------------------------------
+  # L4 + Ingress. Gateway API stays off: envoy-gateway-system already runs on
+  # this cluster and owns the Gateway API CRDs (bundle v1.4.1, experimental
+  # channel). Letting the CCM's CRD controller manage them too would put two
+  # controllers on the same objects.
+  # ---------------------------------------------------------------------------
+  # Ingress: only objects with `ingressClassName: kubelb` (res/ingressclass.yaml).
+  useIngressClass: true
+  disableIngressController: false
+
+  enableGatewayAPI: false
+  installGatewayAPICRDs: false
+  disableGatewayController: true
+  disableHTTPRouteController: true
+  disableGRPCRouteController: true
+
+  # Not needed here: no TLS secrets are synced up to the manager.
+  enableSecretSynchronizer: false
+
+  logLevel: info
