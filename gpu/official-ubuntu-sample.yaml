@@ -1,0 +1,73 @@
+# ubuntu 24.04 + container
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubevirt-ubuntu
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: vm-ubuntu
+  namespace: kubevirt-ubuntu
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+    - metadata:
+        name: vm-ubuntu-disk
+      spec:
+        pvc:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 150G
+          storageClassName: local-path
+        source:
+          registry:
+            url: docker://quay.io/containerdisks/ubuntu:24.04
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: ubuntu
+    spec:
+      domain:
+        cpu:
+          cores: 64      
+        devices:
+          gpus:
+          - deviceName: nvidia.com/GH100_H100_SXM5_80GB
+            name: gpu1       
+          - deviceName: nvidia.com/GH100_H100_SXM5_80GB
+            name: gpu2
+          - deviceName: nvidia.com/GH100_H100_SXM5_80GB
+            name: gpu3
+          - deviceName: nvidia.com/GH100_H100_SXM5_80GB
+            name: gpu4                  
+          disks:
+            - name: containerdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+        resources:
+          requests:
+            memory: 1100G
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+        - name: containerdisk
+          dataVolume:
+            name: vm-ubuntu-disk
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |-
+              #cloud-config
+              password: ubuntu
+              chpasswd: { expire: False }
