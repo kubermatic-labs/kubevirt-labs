@@ -13,10 +13,10 @@ just up
 
 | File                     | What it is                                                                          |
 |--------------------------|-------------------------------------------------------------------------------------|
-| `.env`                   | Names, namespace and kubeconfig paths the Justfile uses                             |
-| `kubeone.yaml`           | The demo cluster on the kubev demo environment. Runs as-is.                         |
+| `.env`                   | Names, namespace, VIPs and kubeconfig paths the Justfile uses                       |
+| `kubeone.yaml`           | The cluster itself, VMs and Helm releases included. Runs as-is.                     |
 | `kubeone.example.yaml`   | Annotated template for any KubeVirt environment, incl. the VPC-per-cluster variant. |
-| `infra/network/subnet-k1-cp.yaml`     | Kube-OVN subnets for the control plane and the workers                              |
+| `infra/network/`         | Kube-OVN subnets for the control plane and the workers                              |
 | `infra/rbac.yaml`        | ServiceAccount + RBAC in the infra cluster, templated                               |
 | `infra/sa-kubeconfig.sh` | Applies that RBAC and mints the kubeconfig KubeOne uses                             |
 | `infra/helmfile.yaml`    | gobetween TCP load balancer in front of the kube-apiserver                          |
@@ -39,7 +39,7 @@ mechanism and would try to apply anything it finds there.
   export KUBEV_KUBECONFIG=/path/to/kubev-cluster-kubeconfig
   ```
 
-  or drop a copy/symlink at `kubernetes/kubeone/kubev-kubeconfig` - `*kubeconfig`
+  or drop a copy/symlink at `kubernetes/kubev-dc/kubeone/kubev-kubeconfig` - `*kubeconfig`
   is gitignored.
 
 `just preflight` checks all of it and tells you what is missing.
@@ -83,25 +83,48 @@ Roughly 8-12 minutes, most of it CDI importing the Ubuntu image. Step by step:
 just preflight       # tools, kubeconfig, ssh-agent, bastion reachable
 just infra           # subnets + RBAC/SA kubeconfig + API load balancer
 just apply           # kubeone apply - creates the VMs, then kubeadm, then workers
-just kubeconfig      # writes ./kubev-demo-kubeconfig
+just kubeconfig      # writes ./kubev-k1-demo-kubeconfig
 ```
 
 Then:
 
 ```bash
-export KUBECONFIG=$PWD/kubev-demo-kubeconfig
+export KUBECONFIG=$PWD/kubev-k1-demo-kubeconfig
 kubectl get nodes
 
 just status          # VMs, disks, LB and control-plane addresses in the infra cluster
 just watch           # follow the VMs coming up
-just ssh             # shell on kubev-demo-cp-0, through the bastion
+just ssh             # shell on kubev-k1-demo-cp-0, through the bastion
 ```
+
+## Headlamp
+
+A workload UI for the new cluster, deployed by `just apply` itself: it is a
+top-level `helmReleases` entry in `kubeone.yaml`, so KubeOne reconciles it on
+every apply (`helm upgrade --install`). Nothing extra to run at provisioning
+time.
+
+```bash
+just headlamp        # prints a login token, then port-forwards to localhost:8081
+```
+
+The Service is a NodePort on 30080, but the node subnets are not advertised on
+the tailnet, so `<node>:30080` is not reachable from a laptop - the recipe
+tunnels through the API server instead, which is reachable via the gobetween
+VIP. Headlamp asks for a ServiceAccount token rather than a password; `just
+headlamp` prints an 8h one to paste in. Port 8081 by default (`HEADLAMP_PORT`
+in `.env`) so it does not clash with `just ui`, which runs `kubeone ui` on 8080.
+
+The ServiceAccount is bound to `cluster-admin` - deliberate for a demo. Swap
+`clusterRoleBinding.clusterRoleName` in `kubeone.yaml` for a read-only role if
+this ever outlives the demo.
 
 Optional extras, not part of `just up`:
 
 ```bash
 just app-storage     # default StorageClass in the new cluster, backed by kubev-vms
 just app-kubelb      # KubeLB CCM (needs a tenant on the KubeLB management cluster)
+just ui              # KubeOne's own cluster overview (port 8080)
 ```
 
 Teardown:
@@ -126,8 +149,8 @@ tobi-demo-bastion ── tailnet, advertises 172.16.0.0/16
    ├─ ovn-default 172.16.0.0/16 ── gobetween 172.16.200.10:6443  ← apiEndpoint
    │                                    │  TCP healthcheck + forward
    ▼                                    ▼
-kubeone-demo-cp   10.180.0.0/29 ── kubev-demo-cp-0      (KubeOne + kubeadm)
-kubeone-demo-workers 10.180.1.0/24 ── kubev-demo-worker-* (machine-controller)
+kubeone-demo-cp   10.180.0.0/24 ── kubev-k1-demo-cp-0      (KubeOne + kubeadm)
+kubeone-demo-workers 10.180.1.0/24 ── kubev-k1-demo-worker-* (machine-controller)
 ```
 
 Three things in here are not obvious.
@@ -141,13 +164,17 @@ makes KubeOne skip Service creation entirely, so a kube-ovn native load balancer
 owns the endpoint instead. It is also the shape that survives moving the cluster
 into its own VPC.
 
-**Why the control-plane subnet is a `/29`.** gobetween needs a static list of
-backends, but machine-controller cannot pin a VM's IP - it only ever sets
-`ovn.kubernetes.io/logical_switch`, so kube-ovn assigns from the subnet. A `/29`
-has five usable addresses, all five are listed as backends, and gobetween's
-`ping` healthcheck is a **TCP dial** (not ICMP, whatever the chart README says).
-Addresses without a live apiserver simply never receive traffic. No pinning, no
-drift, room to go to `replicas: 3` without touching the LB.
+**Why the load balancer has a hard-coded backend list.** gobetween needs a static
+list of backends, but machine-controller cannot pin a VM's IP - it only ever sets
+`ovn.kubernetes.io/logical_switch`, so kube-ovn assigns from the subnet.
+`infra/helmfile.yaml` therefore lists the first five usable addresses of
+`kubeone-demo-cp` (10.180.0.2-10.180.0.6) and lets gobetween sort out which are
+real: its `ping` healthcheck is a **TCP dial** (not ICMP, whatever the chart
+README says), so an address with no live apiserver simply never receives
+traffic. No pinning, no drift, room to go to `replicas: 3` without touching the
+LB. The subnet itself is a `/24` - only those five addresses can ever be
+control-plane VMs as far as the LB is concerned, so going past five means
+extending the list.
 
 **Why `natOutgoing: true` matters.** A kube-ovn subnet without it has no egress
 at all, and kubeadm has to reach registry.k8s.io and the Ubuntu archives. Both
@@ -157,16 +184,16 @@ the control plane.
 
 ## Sizing
 
-Default is **1 control plane + 1 worker**, 2 vCPU / 8 GiB / 30 GiB each.
+Default is **1 control plane + 1 worker**, 2 vCPU / 4 GiB / 30 GiB each.
 
 The demo environment has two schedulable nodes (the three control-plane nodes are
 tainted) and the `kubev-vms` StorageClass asks Longhorn for three replicas on
 those two nodes, so every GiB of VM disk costs roughly 2x on disk. `wk-1` is
 already over-subscribed. Check `just status` and Longhorn before scaling up.
 
-To scale: `replicas:` under `controlPlane.nodeSets[0]` (the `/29` and the
-gobetween backend list already have room for 3) or under `dynamicWorkers[0]`,
-then `just apply`.
+To scale: `replicas:` under `controlPlane.nodeSets[0]` or `dynamicWorkers[0]`,
+then `just apply`. Three control-plane replicas fit the gobetween backend list
+(`10.180.0.2`-`.6` in `infra/helmfile.yaml`) as it stands; past five, extend it.
 
 ## Gotchas
 

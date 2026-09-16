@@ -4,8 +4,28 @@ We presented a talk about Windows on Kubevirt at ContainerDays London 2026, you 
 
 ## Guides
 
-- [Create a demo Ubuntu VM via the UI](linux/kubev-demo-vm-UI.md) — screenshot walkthrough of the Kubermatic Virtualization dashboard, including the two settings that most often break UI-created VMs (instance type and storage class).
-- [Create a demo Windows 10 VM via the UI](windows/kubev-demo-vm-windows-UI.md) — screenshot walkthrough for deploying the Windows golden image, with the Windows-specific settings (`u1.large` + UEFI, and a `kubev-vms` Block/scsi disk).
+- [Create a demo Ubuntu VM via the UI](linux/kubev-demo-vm-UI.md) - screenshot walkthrough of the Kubermatic Virtualization dashboard, including the two settings that most often break UI-created VMs (instance type and storage class).
+- [Create a demo Windows 10 VM via the UI](windows/kubev-demo-vm-windows-UI.md) - screenshot walkthrough for deploying the Windows golden image, with the Windows-specific settings (`u1.large` + UEFI, and a `kubev-vms` Block/scsi disk).
+
+## Data-center setup
+
+[**KubeOne on the KubeVirt demo environment**](kubernetes/kubev-dc/kubeone/) - the
+same KubeOne-on-KubeVirt cluster as the edge one below, but on the hosted demo
+environment: KubeOne provisions the control-plane VMs itself through the
+machine-controller KubeVirt provider, a kube-OVN gobetween VIP fronts the
+kube-apiserver, and the whole thing comes up with `just up`.
+
+## Edge setup
+
+[**KubeV Edge Setup**](kubernetes/kubev-edge-setup/) - the full portable stack, three
+layers deep: a MikroTik Chateau LTE7 that keeps a stable `10.77.33.0/24` lab LAN
+whether the internet arrives by cable, foreign WiFi or LTE; Kubermatic
+Virtualization running on a SNUC mini-PC; and a KubeOne Kubernetes cluster whose
+nodes are KubeVirt VMs on top of it.
+
+- [Edge network](kubernetes/kubev-edge-setup/edge-network/) - router config, uplink failover, `just` recipes
+- [KubeV on the SNUC](kubernetes/kubev-edge-setup/kubermatic-virtualization/) - cluster config, keepalived VIP, storage
+- [KubeOne on KubeVirt VMs](kubernetes/kubev-edge-setup/kubeone/) - a customer-shaped cluster built by KubeOne, reachable on the lab LAN through MetalLB
 
 ## Helper
 ```

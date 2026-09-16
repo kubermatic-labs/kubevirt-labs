@@ -11,7 +11,7 @@
 #   frontend  172.16.200.10 on ovn-default  -> apiEndpoint.host in kubeone.yaml
 #             reachable from the laptop because the demo bastion advertises
 #             172.16.0.0/16 to the tailnet
-#   backend   every usable address of the /29 control-plane subnet
+#   backend   the first five usable addresses of the control-plane subnet
 #             gobetween's "ping" healthcheck is a TCP dial (not ICMP), so
 #             addresses without a live apiserver simply never receive traffic.
 #             No IP pinning needed - machine-controller cannot pin VM IPs.

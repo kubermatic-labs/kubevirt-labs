@@ -79,6 +79,11 @@ apply:
     KUBEVIRT_KUBECONFIG="$(cat {{ sa_kubeconfig }})" \
       kubeone apply -m kubeone.yaml --verbose -y
 
+# KubeOne's own read-only overview of the cluster - nodes, versions, addons. Not
+# a substitute for Headlamp: it reads the KubeOne manifest and the cluster, not
+# your workloads. Binds :8080, which is why `just headlamp` defaults to 8081.
+#
+# KubeOne's cluster overview on http://localhost:8080 (--port to change it).
 ui:
     KUBEVIRT_KUBECONFIG="$(cat {{ sa_kubeconfig }})" \
       kubeone ui -m kubeone.yaml --verbose
@@ -112,6 +117,29 @@ status:
 watch:
     @kubectl -n {{ namespace }} get vm,vmi,dv,pod -w
 
+# The Headlamp Service is a NodePort (30080), but the node subnets are not
+# advertised on the tailnet - so we tunnel through the API server instead, which
+# IS reachable via the gobetween VIP. A login token is printed first: Headlamp
+# asks for a ServiceAccount token, not a password. Port defaults to 8081, not
+# 8080, so it does not collide with `just ui` (`kubeone ui` binds 8080).
+#
+# Open the Headlamp workload UI on http://localhost:<port> (Ctrl-C to stop).
+headlamp port=env("HEADLAMP_PORT", "8081"):
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG="{{ cluster_kubeconfig }}"
+    if ! kubectl -n headlamp get deploy headlamp >/dev/null 2>&1; then
+      echo "Headlamp is not deployed yet - run 'just apply' (it is a helmRelease in kubeone.yaml)." >&2
+      exit 1
+    fi
+    kubectl -n headlamp rollout status deploy/headlamp --timeout=60s
+    echo
+    echo "── paste this token into the Headlamp login screen ───────────────────"
+    kubectl -n headlamp create token headlamp --duration=8h
+    echo "──────────────────────────────────────────────────────────────────────"
+    echo "Headlamp: http://localhost:{{ port }}   (Ctrl-C to stop)"
+    exec kubectl -n headlamp port-forward svc/headlamp {{ port }}:80
+
 # SSH into a control-plane VM through the bastion.
 ssh node="0":
     #!/usr/bin/env bash
@@ -127,9 +155,12 @@ ssh node="0":
 app-storage:
     kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f apps/storage-class.yaml
 
-# KubeLB CCM in the new cluster. Needs a matching tenant on the KubeLB
-# management cluster and the credentials in apps/kubelb-ccm/res/.
 kubelb_version := env("KUBELB_VERSION", "v1.4.2")
+
+# Needs a matching tenant on the KubeLB management cluster and the credentials in
+# apps/kubelb-ccm/res/.
+#
+# KubeLB CCM in the new cluster, for LoadBalancer Services with public IPs.
 app-kubelb:
     helm pull oci://quay.io/kubermatic/helm-charts/kubelb-ccm-ee --version={{ kubelb_version }} \
       --untardir apps/kubelb-ccm/kubelb-ccm-{{ kubelb_version }} --untar
@@ -139,6 +170,8 @@ app-kubelb:
     rm -rf apps/kubelb-ccm/kubelb-ccm-{{ kubelb_version }}
 
 # --- teardown ----------------------------------------------------------------
+
+purge_namespace := env("PURGE_NAMESPACE", "false")
 
 # Graceful: let KubeOne destroy the workers and reset the nodes, then purge.
 down:
@@ -155,7 +188,8 @@ down:
 # Everything here is scoped to THIS cluster: VMs by label, subnets and the IPPool
 # by name. The namespace is only deleted when PURGE_NAMESPACE=true in .env,
 # because it is shared with the rest of the demo environment by default.
-purge_namespace := env("PURGE_NAMESPACE", "false")
+#
+# Delete every trace of this cluster from the infra cluster.
 purge:
     #!/usr/bin/env bash
     set -uo pipefail

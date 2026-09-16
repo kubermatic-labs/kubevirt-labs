@@ -53,9 +53,10 @@ cloudProvider:
 controlPlane:
   nodeSets:
     # One nodeSet, one replica. KubeOne names the VM <cluster>-<nodeSet>-<idx>,
-    # so this is `kubev-demo-cp-0` in namespace kubeone-demo.
-    # Scale with `replicas: 3` - the /29 CP subnet and the gobetween backend
-    # list already have room for it.
+    # so this is `kubev-k1-demo-cp-0` in namespace kubermatic-virtualization.
+    # Scale with `replicas: 3` - the gobetween backend list in
+    # infra/helmfile.yaml already covers the first five addresses of the CP
+    # subnet, so nothing else changes until a sixth control-plane VM.
     - name: cp
       replicas: 1
       operatingSystem: ubuntu
@@ -146,3 +147,41 @@ dynamicWorkers:
               size: "30Gi"
               storageClassName: kubev-vms
               storageAccessType: ReadWriteMany
+
+# Charts KubeOne reconciles into the cluster on every `kubeone apply`, as
+# `helm upgrade --install --create-namespace`. Note the shape: in v1beta2
+# helmReleases is TOP-LEVEL (v1beta3 moves it under addons.addons[].helmRelease).
+helmReleases:
+  # Headlamp - workload UI for the cluster.
+  # https://headlamp.dev  |  chart: https://kubernetes-sigs.github.io/headlamp/
+  - chart: headlamp
+    repoURL: https://kubernetes-sigs.github.io/headlamp/
+    version: "0.45.0"
+    releaseName: headlamp
+    namespace: headlamp
+    wait: true
+    timeout: 5m
+    values:
+      - inline:
+          # NodePort, not LoadBalancer: the KubeVirt CCM would mirror a
+          # LoadBalancer Service into the infra cluster, where it gets no
+          # address (MetalLB's pool is a single, already-used IP and the
+          # mirrored Services carry no loadBalancerClass) - it would sit
+          # <pending> forever.
+          #
+          # The node subnets (10.180.0.0/24, 10.180.1.0/24) are NOT advertised on
+          # the tailnet either, so :30080 is not reachable from a laptop. Use
+          # `just headlamp`, which port-forwards through the API server.
+          # externalTrafficPolicy is spelled out rather than left to the chart,
+          # which renders it as `""` and leans on API-server defaulting.
+          service:
+            type: NodePort
+            port: 80
+            nodePort: 30080
+            externalTrafficPolicy: Cluster
+          # Headlamp authenticates with a ServiceAccount token you paste into
+          # the UI; `just headlamp` prints one. cluster-admin is deliberate for a
+          # demo - scope it down with a read-only ClusterRole for anything real.
+          clusterRoleBinding:
+            create: true
+            clusterRoleName: cluster-admin

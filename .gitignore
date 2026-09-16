@@ -1,6 +1,8 @@
 .local/
 .disks/
 *.img.gz
+*.tar.gz
 *.img
 *kubeconfig
 *kubeconfig.crypt
+kubev-basic-auth-credentials
