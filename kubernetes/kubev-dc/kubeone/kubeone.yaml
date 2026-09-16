@@ -1,0 +1,148 @@
+# KubeOne cluster on the kubev demo environment (kubev-cluster).
+#
+# KubeOne creates the control-plane VMs itself through the machine-controller
+# KubeVirt provider - there is no VM manifest, no Helm chart and no IP planning
+# in this repo any more. `controlPlane.nodeSets` is the whole control plane and
+# `dynamicWorkers` is the whole worker fleet.
+#
+# Prerequisites live in infra/ and are applied by `just infra`. See README.md.
+apiVersion: kubeone.k8c.io/v1beta2
+kind: KubeOneCluster
+name: kubev-k1-demo
+
+versions:
+  kubernetes: 1.34.7
+
+# The gobetween VIP created by infra/helmfile.yaml.
+#
+# KubeOne tunnels all Kubernetes API traffic through its SSH connection, so this
+# address does not have to be reachable from your laptop for `kubeone apply` to
+# work - only for `kubectl` afterwards. It is reachable because the demo bastion
+# advertises 172.16.0.0/16 to the tailnet.
+apiEndpoint:
+  host: "172.16.200.10"
+  port: 6443
+#
+#containerRuntime:
+#  containerd: {}
+#
+#clusterNetwork:
+#  podSubnet: 10.244.0.0/16
+#  serviceSubnet: 10.224.0.0/12
+#  cni:
+#    cilium: {}
+
+cloudProvider:
+  external: true
+  kubevirt:
+    # Namespace in the infra cluster that holds the VMs, their DataVolumes and
+    # the API load balancer.
+    infraNamespace: kubermatic-virtualization
+    zoneAndRegionEnabled: false
+    # LoadBalancer Services in the new cluster are KubeLB's job (apps/kubelb-ccm),
+    # not the KubeVirt CCM's.
+    loadBalancerEnabled: true
+    #
+    # `controlPlane:` is deliberately NOT set here. Setting it makes KubeOne
+    # create its own Service for the API endpoint - but that Service comes up
+    # without a loadBalancerClass, and on this cluster nothing would give it an
+    # address (MetalLB's pool is one already-used IP, and only
+    # loadBalancerClass: kubelb yields a public one). gobetween owns the
+    # endpoint instead; see infra/helmfile.yaml.
+
+controlPlane:
+  nodeSets:
+    # One nodeSet, one replica. KubeOne names the VM <cluster>-<nodeSet>-<idx>,
+    # so this is `kubev-demo-cp-0` in namespace kubeone-demo.
+    # Scale with `replicas: 3` - the /29 CP subnet and the gobetween backend
+    # list already have room for it.
+    - name: cp
+      replicas: 1
+      operatingSystem: ubuntu
+      operatingSystemSpec:
+        distUpgradeOnBoot: false
+      ssh:
+        username: ubuntu
+        agentSocket: env:SSH_AUTH_SOCK
+        # The VM only ever gets an internal kube-ovn address, so KubeOne always
+        # SSHes to 10.180.0.x. tobi-demo-bastion is the way in - see
+        # hack/demo-setup/ for how it is deployed and put on the tailnet.
+        bastion: "100.96.207.39"
+        bastionUser: ubuntu
+        publicKeys:
+          - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCloj8OvReuuOXtECaMo1iZD8q8newJ9hWZSxIiwOG2406uOueYOxBleb85Jl231YWWjocj6fqExvZBzsQQlrad4fy6oDL5sKZyngtkCZnWcq1DsWn8Sgas9lw2+KS67EXO/P5SHhJSOrqyU6ciktX0WViPvVqb6DnK3RepFh6Xnyl0Q/0RnpSCTomyKK2PfNsv8e80AnfxA1CtnRfeexgwiKtQUPzkEdCG1ABcdZZru3m0y7y1qR0MdYYZIK+bycacngvJCJyp8gnIXHU8dDZanHL2WGOcCpd/gjwM6iryr6IhlCZXw++PRGK1aErtvKDH7oaAMLW8qFK4+bpMdeytd4Viw/g3SH3Q7ows2xl6NTaU2F0PTXD+qAY2xna1eemet1txl1oP6KQJ2Rqc5rNU3/auhdK4PaU22D8Z2XF7gOrsoQB7dqW0BBDHg/ftVNb9BgOHGkYvxSsCavcqX3joUyFjHzhv+sD1WiOPvfRqV4fQ8h47ERvD3QXuBn+5YKeKp/0sjSCypIdK02FAFa2NxN2tEoh7wdCBX9enFU3UT7jfeW5Pf98Z6ao9hiAF80J5FIM21sMG3E3dAMb2tr8Gc8jM5QdWO4rJkG9j5v2d1umLkSxm7pN4Mxw/AE02jYNEblm9i/Pbzg8wqa9gw2gubO7A8qoKVtA1xlOnDVB+0Q== tobi@loodse.com"
+      cloudProviderSpec:
+        virtualMachine:
+          evictionStrategy: LiveMigrate
+          # Without this the VM inherits the virt-launcher pod's resolv.conf,
+          # which is the INFRA cluster's CoreDNS ClusterIP (10.96.0.10).
+          # KubeVirt's bridge DHCP hands that to the guest, and the node then
+          # depends on an infra-cluster ClusterIP being DNAT-able from inside a
+          # bridge-bound VM - fragile, and it points a KubeOne node at the wrong
+          # cluster's `cluster.local`. Give it real upstream resolvers instead.
+          # 185.12.64.1/.2 are what the infra nodes themselves use (Hetzner).
+          dnsPolicy: None
+          dnsConfig:
+            nameservers:
+              - 185.12.64.1
+              - 185.12.64.2
+          providerNetwork:
+            name: kubeovn
+            vpc:
+              name: ovn-cluster
+              subnet:
+                # Setting a subnet also flips machine-controller to
+                # RunStrategy: Always, so a stopped control-plane VM comes back.
+                name: kubeone-demo-cp
+          template:
+            vcpus:
+              cores: 2
+            memory: 4Gi
+            primaryDisk:
+              osImage: "docker://quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64"
+              source: registry
+              pullMethod: node
+              size: "30Gi"
+              # NOT the default StorageClass: longhorn cannot serve a raw block
+              # device for a VM disk and the CDI import hangs forever.
+              storageClassName: kubev-vms
+              storageAccessType: ReadWriteMany
+
+dynamicWorkers:
+  - name: worker
+    replicas: 1
+    providerSpec:
+      operatingSystem: ubuntu
+      operatingSystemSpec:
+        distUpgradeOnBoot: false
+      sshPublicKeys:
+        - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCloj8OvReuuOXtECaMo1iZD8q8newJ9hWZSxIiwOG2406uOueYOxBleb85Jl231YWWjocj6fqExvZBzsQQlrad4fy6oDL5sKZyngtkCZnWcq1DsWn8Sgas9lw2+KS67EXO/P5SHhJSOrqyU6ciktX0WViPvVqb6DnK3RepFh6Xnyl0Q/0RnpSCTomyKK2PfNsv8e80AnfxA1CtnRfeexgwiKtQUPzkEdCG1ABcdZZru3m0y7y1qR0MdYYZIK+bycacngvJCJyp8gnIXHU8dDZanHL2WGOcCpd/gjwM6iryr6IhlCZXw++PRGK1aErtvKDH7oaAMLW8qFK4+bpMdeytd4Viw/g3SH3Q7ows2xl6NTaU2F0PTXD+qAY2xna1eemet1txl1oP6KQJ2Rqc5rNU3/auhdK4PaU22D8Z2XF7gOrsoQB7dqW0BBDHg/ftVNb9BgOHGkYvxSsCavcqX3joUyFjHzhv+sD1WiOPvfRqV4fQ8h47ERvD3QXuBn+5YKeKp/0sjSCypIdK02FAFa2NxN2tEoh7wdCBX9enFU3UT7jfeW5Pf98Z6ao9hiAF80J5FIM21sMG3E3dAMb2tr8Gc8jM5QdWO4rJkG9j5v2d1umLkSxm7pN4Mxw/AE02jYNEblm9i/Pbzg8wqa9gw2gubO7A8qoKVtA1xlOnDVB+0Q== tobi@loodse.com"
+      cloudProviderSpec:
+        # Unlike the control plane, KubeOne passes the worker spec through
+        # verbatim - clusterName has to be set here.
+        clusterName: kubev-k1-demo
+        virtualMachine:
+          evictionStrategy: LiveMigrate
+          # Same reason as the control plane above.
+          dnsPolicy: None
+          dnsConfig:
+            nameservers:
+              - 185.12.64.1
+              - 185.12.64.2
+          providerNetwork:
+            name: kubeovn
+            vpc:
+              name: ovn-cluster
+              subnet:
+                name: kubeone-demo-workers
+          template:
+            vcpus:
+              cores: 2
+            memory: 4Gi
+            primaryDisk:
+              osImage: "docker://quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64"
+              source: registry
+              pullMethod: node
+              size: "30Gi"
+              storageClassName: kubev-vms
+              storageAccessType: ReadWriteMany

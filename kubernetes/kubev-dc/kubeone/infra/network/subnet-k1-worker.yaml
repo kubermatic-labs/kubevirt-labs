@@ -1,0 +1,27 @@
+# Kube-OVN subnets for the KubeOne demo cluster.
+#
+# Both live in the DEFAULT VPC (ovn-cluster) so they are routed to ovn-default -
+# that is what lets the bastion SSH into the VMs and what gives the gobetween
+# pod (which sits on ovn-default) a path to the control plane.
+#
+# natOutgoing is NOT optional: a subnet without it has no egress at all, and
+# kubeadm has to reach registry.k8s.io / the Ubuntu archives during provisioning.
+#
+# Splitting control plane and workers into two subnets keeps the control-plane
+# range tiny, so infra/helmfile.yaml can list every usable address as a
+# gobetween backend instead of guessing which IP kube-ovn handed out.
+
+apiVersion: kubeovn.io/v1
+kind: Subnet
+metadata:
+  name: kubeone-demo-workers
+spec:
+  vpc: ovn-cluster
+  protocol: IPv4
+  cidrBlock: 10.180.1.0/24
+  gateway: 10.180.1.1
+  excludeIps:
+    - 10.180.1.1
+  gatewayType: distributed
+  natOutgoing: true
+  private: false

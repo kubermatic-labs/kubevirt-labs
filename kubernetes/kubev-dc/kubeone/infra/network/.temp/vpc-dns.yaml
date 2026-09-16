@@ -1,0 +1,122 @@
+# VPC DNS - enables DNS resolution for pods in custom VPCs
+# Deploys a CoreDNS instance with dual NICs (one in the custom VPC, one in the default VPC)
+# so it can forward DNS queries to the cluster CoreDNS.
+#
+# By setting coredns-vip to 10.96.0.10 (the kube-dns ClusterIP), pods in the custom VPC
+# can use the default dnsPolicy (ClusterFirst) and DNS works transparently via the
+# OVN SwitchLBRule interception.
+
+# NetworkAttachmentDefinition for the CoreDNS pod's second NIC in the default VPC
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: ovn-nad
+  namespace: default
+spec:
+  config: '{
+      "cniVersion": "0.3.0",
+      "type": "kube-ovn",
+      "server_socket": "/run/openvswitch/kube-ovn-daemon.sock",
+      "provider": "ovn-nad.default.ovn"
+    }'
+
+---
+# The vpc-dns ServiceAccount is not referenced directly in your manifests — it's used by the CoreDNS Deployment that Kube-OVN auto-creates when it processes the
+#  VpcDns resource.
+# When you apply the VpcDns CR, the kube-ovn-controller automatically creates a CoreDNS Deployment in kube-system with serviceAccountName: vpc-dns. That deployment
+#  needs the ServiceAccount + ClusterRole to query the Kubernetes API for services, endpoints, and pods — which is how it resolves *.svc.cluster.local names.
+#
+#  So the chain is:
+#  1. You create the ServiceAccount + ClusterRole + ClusterRoleBinding (lines 22–52)
+#  2. You create the VpcDns CR (lines 66–72)
+#  3. Kube-OVN controller sees the VpcDns and creates a CoreDNS Deployment that references serviceAccountName: vpc-dns
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vpc-dns
+  namespace: kube-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system:vpc-dns
+rules:
+  - apiGroups: [""]
+    resources: [endpoints, services, pods, namespaces]
+    verbs: [list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [list, watch]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vpc-dns
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:vpc-dns
+subjects:
+  - kind: ServiceAccount
+    name: vpc-dns
+    namespace: kube-system
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vpc-dns-config
+  namespace: kube-system
+data:
+  enable-vpc-dns: "true"
+  coredns-vip: "10.96.0.10"
+  nad-name: "ovn-nad"
+  nad-provider: "ovn-nad.default.ovn"
+
+---
+# Corefile for the VPC DNS CoreDNS pod.
+# The kube-ovn-controller creates the Deployment but expects this ConfigMap to exist.
+# Uses the kubernetes plugin for cluster-internal names (talks to API server via the default-VPC NIC)
+# and forwards external queries to the infrastructure DNS (10.30.10.250).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vpc-dns-corefile
+  namespace: kube-system
+
+#### DNS from host, e.g.:
+#root@kubev-demo-env-wk-1 / # resolvectl status
+#Global
+#         Protocols: -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+#  resolv.conf mode: stub
+#
+#Link 2 (enp41s0)
+#    Current Scopes: DNS
+#         Protocols: +DefaultRoute -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+#Current DNS Server: 185.12.64.2
+#       DNS Servers: 185.12.64.2 185.12.64.1 2a01:4ff:ff00::add:1 2a01:4ff:ff00::add:2
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health {
+           lameduck 5s
+        }
+        ready
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+           pods insecure
+           fallthrough in-addr.arpa ip6.arpa
+        }
+        prometheus :9153
+        forward . 185.12.64.1 {
+           prefer_udp
+        }
+        cache 30
+        loop
+        reload
+        loadbalance
+    }
+

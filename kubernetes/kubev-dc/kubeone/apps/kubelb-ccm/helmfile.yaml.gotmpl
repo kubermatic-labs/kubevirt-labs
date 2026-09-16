@@ -1,0 +1,13 @@
+{{ $kubelbVersion := requiredEnv "KUBELB_VERSION" }}
+releases:
+  - name: kubelb-ccm
+    namespace: kubelb
+    createNamespace: true
+    chart: kubelb-ccm-{{ $kubelbVersion }}/kubelb-ccm-ee
+    version: {{ $kubelbVersion }}
+    hooks:
+      - events: [ "presync" ]
+        command: "kubectl"
+        args: [ "apply", "-f", "kubelb-ccm-{{ $kubelbVersion }}/kubelb-ccm-ee/crds/","-f", "./res"]
+    values:
+      - values.yaml

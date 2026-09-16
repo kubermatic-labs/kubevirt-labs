@@ -1,0 +1,57 @@
+# kube-apiserver load balancer for the KubeOne demo cluster.
+#
+# Why this instead of letting KubeOne create a Service: KubeOne's
+# cloudProvider.kubevirt.controlPlane.loadBalancer creates a plain Service with
+# no loadBalancerClass. On the kubev demo cluster nothing would give it an
+# address - MetalLB's pool is a single, already-used IP (10.32.0.6) and only
+# services with `loadBalancerClass: kubelb` get a public one. So a kube-ovn
+# native LB owns the endpoint instead, which is also the shape we want when the
+# cluster moves into its own VPC later.
+#
+#   frontend  172.16.200.10 on ovn-default  -> apiEndpoint.host in kubeone.yaml
+#             reachable from the laptop because the demo bastion advertises
+#             172.16.0.0/16 to the tailnet
+#   backend   every usable address of the /29 control-plane subnet
+#             gobetween's "ping" healthcheck is a TCP dial (not ICMP), so
+#             addresses without a live apiserver simply never receive traffic.
+#             No IP pinning needed - machine-controller cannot pin VM IPs.
+repositories:
+  - name: kubermatic-community
+    url: git+https://github.com/kubermatic/community-components@charts/kubeovn-gobetween?ref=kubeovn-gobetween-v0.2.0
+
+releases:
+  - name: kubeone-demo-api-lb
+    namespace: kubermatic-virtualization
+    createNamespace: true
+    chart: kubermatic-community/kubeovn-gobetween
+    values:
+      - frontend:
+          port: 6443
+          subnet: ovn-default
+          ipPool:
+            name: kubeone-demo-api-vip
+            ips:
+              - "172.16.200.10"
+        backend:
+          port: 6443
+          ipPool:
+            # name/subnet deliberately unset: the chart only renders an IPPool
+            # when BOTH name and ips are given, and an IPPool covering the whole
+            # usable range would compete with kube-ovn's own allocation for the
+            # VMs. We only want the address list for gobetween's config here.
+            ips:
+              - "10.180.0.2"
+              - "10.180.0.3"
+              - "10.180.0.4"
+              - "10.180.0.5"
+              - "10.180.0.6"
+        gobetween:
+          healthcheck:
+            kind: ping      # TCP dial to <backend>:6443
+            interval: "5s"
+            timeout: "2s"
+            fails: 2
+            passes: 1
+        priorityClass:
+          enabled: true
+          name: kubeone-demo-api-lb

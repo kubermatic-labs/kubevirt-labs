@@ -1,0 +1,173 @@
+set dotenv-load := true
+
+_default:
+    @just --list
+
+# --- configuration -----------------------------------------------------------
+# All of it lives in .env next to this file - edit there, not here. A real
+# environment variable overrides .env, so `CLUSTER_NAME=x just status` works.
+# The defaults below only apply if .env is missing entirely.
+cluster   := env("CLUSTER_NAME", "kubev-k1-demo")
+namespace := env("INFRA_NAMESPACE", "kubermatic-virtualization")
+
+cp_subnet     := env("CP_SUBNET", "kubeone-demo-cp")
+worker_subnet := env("WORKER_SUBNET", "kubeone-demo-workers")
+api_lb        := env("API_LB", "kubeone-demo-api-lb")
+api_vip_pool  := env("API_VIP_POOL", "kubeone-demo-api-vip")
+
+# join() follows Rust path semantics: a bare name resolves next to this
+# Justfile, an absolute path is used as-is.
+kubev_kubeconfig   := join(justfile_directory(), env("KUBEV_KUBECONFIG", "kubev-kubeconfig"))
+sa_kubeconfig      := join(justfile_directory(), env("SA_KUBECONFIG", "infra/kubeone-infra-kubeconfig"))
+cluster_kubeconfig := join(justfile_directory(), env("CLUSTER_KUBECONFIG", "kubev-k1-demo-kubeconfig"))
+
+# kubectl/helmfile in this Justfile always talk to the INFRA cluster.
+export KUBECONFIG := kubev_kubeconfig
+
+# --- the demo ----------------------------------------------------------------
+
+# Everything: prerequisites in the infra cluster, then the cluster itself.
+up: preflight infra apply kubeconfig nodes
+
+# Fail early and loudly rather than halfway through a 10-minute provisioning run.
+preflight:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    fail=0
+    for bin in kubeone kubectl helm helmfile; do
+      command -v "$bin" >/dev/null || { echo "MISSING: $bin"; fail=1; }
+    done
+    if [ ! -r "{{ kubev_kubeconfig }}" ]; then
+      echo "MISSING: infra kubeconfig at {{ kubev_kubeconfig }} (set KUBEV_KUBECONFIG)"; fail=1
+    elif ! kubectl --request-timeout=10s get ns >/dev/null 2>&1; then
+      echo "UNREACHABLE: infra cluster via {{ kubev_kubeconfig }}"; fail=1
+    fi
+    ssh-add -l >/dev/null 2>&1 || { echo "EMPTY: ssh-agent has no keys - kubeone uses agentSocket"; fail=1; }
+    bastion=$(grep -A1 'bastion:' kubeone.yaml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    nc -z -G 5 "$bastion" 22 >/dev/null 2>&1 \
+      || { echo "UNREACHABLE: bastion $bastion:22 - is Tailscale up?"; fail=1; }
+    # .env and kubeone.yaml carry these names separately - KubeOne does not
+    # template its manifest - so a drift makes every recipe look at the wrong
+    # objects. Catch it here instead of 10 minutes into a provisioning run.
+    yaml_cluster=$(grep -E '^name:' kubeone.yaml | head -1 | awk '{print $2}')
+    yaml_ns=$(grep -E '^\s+infraNamespace:' kubeone.yaml | head -1 | awk '{print $2}')
+    [ "$yaml_cluster" = "{{ cluster }}" ] \
+      || { echo "DRIFT: CLUSTER_NAME={{ cluster }} but kubeone.yaml name: $yaml_cluster"; fail=1; }
+    [ "$yaml_ns" = "{{ namespace }}" ] \
+      || { echo "DRIFT: INFRA_NAMESPACE={{ namespace }} but kubeone.yaml infraNamespace: $yaml_ns"; fail=1; }
+    [ "$fail" -eq 0 ] && echo "preflight OK" || { echo; echo "preflight FAILED"; exit 1; }
+
+# Prerequisites in the infra cluster: subnets, RBAC + SA kubeconfig, API load balancer.
+infra: infra-network infra-rbac infra-lb
+
+# Kube-OVN subnets for the control plane and the workers.
+infra-network:
+    kubectl apply -f infra/network
+    @kubectl get subnet {{ cp_subnet }} {{ worker_subnet }}
+
+# ServiceAccount + RBAC in the infra cluster, and the kubeconfig KubeOne uses for it.
+infra-rbac:
+    ./infra/sa-kubeconfig.sh --namespace {{ namespace }} --name kubeone-infra --output {{ sa_kubeconfig }}
+
+# gobetween LB that fronts the kube-apiserver (see infra/helmfile.yaml).
+infra-lb:
+    helmfile sync -n {{ namespace }} -f infra/helmfile.yaml
+    @kubectl -n {{ namespace }} rollout status deploy/{{ api_lb }} --timeout=120s
+
+# Provision the cluster. Creates the control-plane VMs, then kubeadm, then the workers.
+apply:
+    KUBEVIRT_KUBECONFIG="$(cat {{ sa_kubeconfig }})" \
+      kubeone apply -m kubeone.yaml --verbose -y
+
+ui:
+    KUBEVIRT_KUBECONFIG="$(cat {{ sa_kubeconfig }})" \
+      kubeone ui -m kubeone.yaml --verbose
+
+# Write the cluster's kubeconfig next to this Justfile.
+kubeconfig:
+    KUBEVIRT_KUBECONFIG="$(cat {{ sa_kubeconfig }})" \
+      kubeone kubeconfig -m kubeone.yaml > {{ cluster_kubeconfig }}
+    @chmod 600 {{ cluster_kubeconfig }}
+    @echo "export KUBECONFIG={{ cluster_kubeconfig }}"
+
+# --- inspection --------------------------------------------------------------
+
+# Nodes of the new cluster (needs the API VIP to be reachable, i.e. Tailscale up).
+nodes:
+    @kubectl --kubeconfig {{ cluster_kubeconfig }} get nodes -o wide
+
+# What the infra cluster is running for us.
+status:
+    @echo "── VMs ───────────────────────────────────────────────"
+    @kubectl -n {{ namespace }} get vm,vmi -o wide 2>/dev/null || true
+    @echo "── disks ─────────────────────────────────────────────"
+    @kubectl -n {{ namespace }} get dv,pvc 2>/dev/null || true
+    @echo "── api load balancer ─────────────────────────────────"
+    @kubectl -n {{ namespace }} get pod -l app=kubeovn-gobetween-lb \
+        -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,IP:.status.podIP 2>/dev/null || true
+    @echo "── control plane addresses ───────────────────────────"
+    @kubectl -n {{ namespace }} get vmi -o custom-columns=NAME:.metadata.name,IP:.status.interfaces[0].ipAddress --no-headers 2>/dev/null || true
+
+# Follow the VMs coming up.
+watch:
+    @kubectl -n {{ namespace }} get vm,vmi,dv,pod -w
+
+# SSH into a control-plane VM through the bastion.
+ssh node="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ip=$(kubectl -n {{ namespace }} get vmi {{ cluster }}-cp-{{ node }} \
+          -o jsonpath='{.status.interfaces[0].ipAddress}')
+    bastion=$(grep -A1 'bastion:' kubeone.yaml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    exec ssh -J "ubuntu@${bastion}" "ubuntu@${ip}"
+
+# --- optional extras (not part of `just up`) ---------------------------------
+
+# Default StorageClass in the new cluster, backed by the infra kubev-vms class.
+app-storage:
+    kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f apps/storage-class.yaml
+
+# KubeLB CCM in the new cluster. Needs a matching tenant on the KubeLB
+# management cluster and the credentials in apps/kubelb-ccm/res/.
+kubelb_version := env("KUBELB_VERSION", "v1.4.2")
+app-kubelb:
+    helm pull oci://quay.io/kubermatic/helm-charts/kubelb-ccm-ee --version={{ kubelb_version }} \
+      --untardir apps/kubelb-ccm/kubelb-ccm-{{ kubelb_version }} --untar
+    cd apps/kubelb-ccm && \
+      KUBECONFIG={{ cluster_kubeconfig }} KUBELB_VERSION={{ kubelb_version }} \
+      helmfile sync -f helmfile.yaml.gotmpl
+    rm -rf apps/kubelb-ccm/kubelb-ccm-{{ kubelb_version }}
+
+# --- teardown ----------------------------------------------------------------
+
+# Graceful: let KubeOne destroy the workers and reset the nodes, then purge.
+down:
+    KUBEVIRT_KUBECONFIG="$(cat {{ sa_kubeconfig }})" \
+      kubeone reset -m kubeone.yaml --destroy-workers -y
+    just purge
+
+# `kubeone reset` destroys MachineDeployment workers and resets nodes over SSH,
+# but it never deletes the control-plane VMs it created - those are ours to
+# clean up.
+#
+# Delete everything KubeOne left behind. Use directly if `just down` cannot run.
+#
+# Everything here is scoped to THIS cluster: VMs by label, subnets and the IPPool
+# by name. The namespace is only deleted when PURGE_NAMESPACE=true in .env,
+# because it is shared with the rest of the demo environment by default.
+purge_namespace := env("PURGE_NAMESPACE", "false")
+purge:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # The cloud-init secrets carry an ownerRef on their VM, so they go with it.
+    kubectl -n {{ namespace }} delete vm -l kubeone_cluster_name={{ cluster }} --wait=false || true
+    kubectl delete -f infra/network || true
+    kubectl delete ippool {{ api_vip_pool }} || true
+    helm -n {{ namespace }} uninstall {{ api_lb }} 2>/dev/null || true
+    if [ "{{ purge_namespace }}" = "true" ]; then
+      echo "PURGE_NAMESPACE=true -> deleting namespace {{ namespace }}"
+      kubectl delete ns {{ namespace }} --wait=false || true
+    else
+      echo "Keeping namespace {{ namespace }} (PURGE_NAMESPACE is not true)."
+    fi
+    rm -f {{ cluster_kubeconfig }} {{ sa_kubeconfig }}

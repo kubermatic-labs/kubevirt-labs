@@ -1,0 +1,9 @@
+# Configures the default DNS of the VPC (for pods)
+---
+kind: VpcDns
+apiVersion: kubeovn.io/v1
+metadata:
+  name: vpc-dns-k1-demo
+spec:
+  subnet: kubeone-demo-cp
+  vpc: ovn-cluster

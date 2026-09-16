@@ -1,0 +1,15 @@
+# CARRIED OVER from the FOG/bwxlab environment - NOT wired for the kubev demo.
+# Before `just app-kubelb`, fix: tenantName (must match a tenant on the KubeLB
+# management cluster), clusterSecretName, and the credentials in res/.
+## TODO use CE version
+#imagePullSecrets:
+#  - name: regcred
+kubelb:
+  # Name of the secret containing the kubeconfig for the KubeLB management cluster
+  clusterSecretName: kubelb-manager
+  # Must match the tenant name configured on the KubeLB management cluster (30_kubelb/50_services/kubelb/tenants/)
+  tenantName: k1-demo
+  enableGatewayAPI: false
+  installGatewayAPICRDs: false
+  # Use InternalIP since VMs only have internal addresses reachable from the KubeLB cluster
+  nodeAddressType: InternalIP

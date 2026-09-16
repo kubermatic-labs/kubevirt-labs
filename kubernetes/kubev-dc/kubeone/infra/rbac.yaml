@@ -1,0 +1,151 @@
+# Namespace-scoped RBAC on the INFRA (KubeVirt) cluster for everything the
+# KubeOne cluster runs against it: KubeOne's own provisioner, and the CCM, CSI
+# driver and machine-controller it deploys into the new cluster.
+#
+# __NAMESPACE__ and __SA_NAME__ are substituted by infra/sa-kubeconfig.sh, which
+# also mints the kubeconfig from the token secret below. Do not apply this file
+# directly.
+#
+#### UPSTREAM Sources:
+# CSI DRIVER:          https://github.com/kubevirt/csi-driver/blob/main/deploy/infra-cluster-service-account.yaml
+# CCM (instances):     https://github.com/kubevirt/cloud-provider-kubevirt/blob/main/pkg/provider/instances_v2.go
+# CCM (loadbalancer):  https://github.com/kubevirt/cloud-provider-kubevirt/blob/main/pkg/provider/loadbalancer.go
+# MachineController:   https://github.com/kubermatic/machine-controller/blob/main/pkg/cloudprovider/provider/kubevirt/provider.go
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: __SA_NAME__
+  namespace: __NAMESPACE__
+
+---
+# Long-lived token for the ServiceAccount (K8s 1.24+ does not auto-create)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: __SA_NAME__-token
+  namespace: __NAMESPACE__
+  annotations:
+    kubernetes.io/service-account.name: __SA_NAME__
+type: kubernetes.io/service-account-token
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: __SA_NAME__
+  namespace: __NAMESPACE__
+rules:
+  # KubeOne + MachineController: create/delete the control-plane and worker VMs.
+  # KubeOne's provisioner uses the same machine-controller code path, so it needs
+  # the same verbs.
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines"]
+    verbs: ["get", "watch", "list", "create", "delete"]
+
+  # CCM: read VMI status for node lifecycle (InstanceExists, InstanceShutdown,
+  # InstanceMetadata). KubeOne also reads it to learn the VM's IP address.
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachineinstances"]
+    verbs: ["get", "watch", "list"]
+
+  # CSI: hot-plug volumes (VM subresource for attach; VMI subresource also used
+  # for detach via RemoveVolumeFromVMI())
+  - apiGroups: ["subresources.kubevirt.io"]
+    resources:
+      - "virtualmachines/addvolume"
+      - "virtualmachines/removevolume"
+      - "virtualmachineinstances/removevolume"
+    verbs: ["update"]
+
+  # CSI: manage DataVolumes (CDI) for persistent storage
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes"]
+    verbs: ["get", "create", "delete"]
+
+  # CSI: volume snapshots (CreateVolumeSnapshot, DeleteVolumeSnapshot, ListVolumeSnapshots)
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["get", "list", "create", "delete"]
+
+  # MachineController: query storage profiles to resolve disk access modes
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["storageprofiles"]
+    verbs: ["get"]
+
+  # CCM: manage Services (LoadBalancer type). Unused while
+  # cloudProvider.kubevirt.loadBalancerEnabled is false, kept so turning it on
+  # does not need an RBAC change.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # MachineController + KubeOne: create secrets carrying VM userdata
+  # CSI: read secrets for image authentication
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+
+  # CSI: manage PVCs in the namespace (upstream: get + patch only)
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+
+  # CSI/CCM: write events (list/watch not needed on the infra cluster)
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: __SA_NAME__
+  namespace: __NAMESPACE__
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: __SA_NAME__
+subjects:
+  - kind: ServiceAccount
+    name: __SA_NAME__
+    namespace: __NAMESPACE__
+
+---
+# Cluster-scoped: PVs (CSI), StorageClasses (MachineController), Nodes (CCM)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: __SA_NAME__-csi
+rules:
+  # CSI: read PersistentVolumes only (write ops belong to the tenant cluster's
+  # external-provisioner)
+  # ref: https://github.com/kubevirt/csi-driver/blob/main/deploy/infra-cluster-service-account.yaml
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get"]
+
+  # MachineController: read the infra StorageClass to resolve the PV access mode
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+
+  # CCM: get the infra node by name for zone/region labels
+  # (instancesV2.getRegionAndZone)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: __SA_NAME__-csi
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: __SA_NAME__-csi
+subjects:
+  - kind: ServiceAccount
+    name: __SA_NAME__
+    namespace: __NAMESPACE__

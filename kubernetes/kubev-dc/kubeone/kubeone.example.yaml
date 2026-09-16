@@ -1,0 +1,189 @@
+# Annotated template: a KubeOne cluster on any KubeVirt infrastructure, with the
+# control plane living in its own kube-ovn VPC.
+#
+# kubeone.yaml next to this file is the version that actually runs on the kubev
+# demo environment - start from that if you just want the demo. This file is the
+# one to hand to a customer, and it is where the VPC-per-cluster variant is
+# written down.
+#
+# Requires KubeOne >= 1.14. Note the apiVersion: v1beta3 exists in the Go types
+# but v1.14.3 still rejects it in the config loader, so v1beta2 is what you use.
+apiVersion: kubeone.k8c.io/v1beta2
+kind: KubeOneCluster
+name: my-cluster
+
+versions:
+  kubernetes: 1.34.7        # KubeOne 1.14 supports 1.34 - 1.36
+
+containerRuntime:
+  containerd: {}
+
+clusterNetwork:
+  # Must not overlap the infra cluster's pod/service CIDRs or the kube-ovn
+  # subnets below.
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.224.0.0/12
+  cni:
+    cilium: {}
+
+cloudProvider:
+  external: true            # deploys ccm-kubevirt + csi-kubevirt
+  kubevirt:
+    # Namespace in the infra cluster holding the VMs, DataVolumes and secrets.
+    infraNamespace: my-cluster
+    # Set true only if the infra nodes carry topology.kubernetes.io/{region,zone}
+    # and you want those labels on the new cluster's nodes.
+    zoneAndRegionEnabled: false
+    # true = the KubeVirt CCM owns LoadBalancer Services in the new cluster
+    # (it mirrors them as Services in infraNamespace). Leave false if KubeLB or
+    # anything else is doing that job.
+    loadBalancerEnabled: false
+
+    # ── Option A: let KubeOne own the API endpoint ──────────────────────────
+    # KubeOne creates this Service in infraNamespace, selects the control-plane
+    # VMs by label and fills apiEndpoint in from its address. Drop the
+    # apiEndpoint block below if you use this.
+    #
+    # Only works if something in the infra cluster actually assigns an address.
+    # KubeOne cannot set spec.loadBalancerClass, so a class-gated LB controller
+    # (KubeLB with useLoadBalancerClass: true, for instance) will ignore it.
+    # Note also that with serviceType: NodePort, KubeOne 1.14.3 reports the
+    # endpoint as <svc>.<ns>.svc.cluster.local - only useful from inside the
+    # infra cluster.
+    #
+    # controlPlane:
+    #   loadBalancer:
+    #     name: my-cluster-kubeapi
+    #     serviceType: LoadBalancer
+    #     annotations:
+    #       metallb.universe.tf/address-pool: public
+
+# ── Option B: bring your own endpoint ─────────────────────────────────────────
+# Setting apiEndpoint.host makes KubeOne skip its own Service entirely. This is
+# what the demo does: a kube-ovn native TCP load balancer (gobetween) with a
+# pinned VIP on a routed subnet, forwarding to the control-plane subnet. See
+# infra/helmfile.yaml.
+#
+# KubeOne tunnels API traffic through its SSH connection, so this address has to
+# be reachable from the control-plane VMs during provisioning, and from wherever
+# you run kubectl afterwards - but not from the machine running `kubeone apply`.
+apiEndpoint:
+  host: "10.0.0.10"
+  port: 6443
+  # alternativeNames:
+  #   - k8s-api.my-cluster.example.com
+
+controlPlane:
+  nodeSets:
+    # KubeOne names the VMs <cluster>-<nodeSet>-<index>.
+    #
+    # Careful: KubeOne validates that the number of NODESETS is odd, not the
+    # number of replicas (validation.go: len(nodeSets)%2). One nodeSet with
+    # replicas 1 or 3 is the normal shape.
+    - name: cp
+      replicas: 3
+      operatingSystem: ubuntu       # ubuntu | rhel | flatcar | rockylinux
+      operatingSystemSpec:
+        distUpgradeOnBoot: false
+      ssh:
+        # KubeVirt VMs only ever get an internal address, and KubeOne uses it as
+        # both the public and the private address. So unless you run KubeOne
+        # from inside that network, you need a bastion that can reach it.
+        username: ubuntu
+        agentSocket: env:SSH_AUTH_SOCK
+        # privateKeyFile: ~/.ssh/id_ed25519   # alternative to the agent
+        bastion: "203.0.113.10"
+        bastionUser: ubuntu
+        publicKeys:
+          # Injected into the VM's cloud-init as the default user's key.
+          - "ssh-ed25519 AAAA...replace-me..."
+
+      # Passed straight to the machine-controller KubeVirt provider. Unknown
+      # fields are rejected, so keep to the RawConfig in
+      # machine-controller/sdk/cloudprovider/kubevirt/types.go.
+      cloudProviderSpec:
+        virtualMachine:
+          # LiveMigrate keeps the VM alive when an infra node is drained.
+          # Requires RWX block storage (StorageClass with migratable: "true").
+          evictionStrategy: LiveMigrate
+          providerNetwork:
+            name: kubeovn
+            vpc:
+              # A dedicated VPC per cluster is the isolated shape. Two things to
+              # know before you pick one:
+              #   - a custom VPC has NO egress unless you give it a
+              #     VpcNatGateway; kubeadm needs to reach the image registries
+              #   - ClusterIPs of the infra cluster are not reachable from
+              #     inside a custom VPC
+              # The default VPC (ovn-cluster) avoids both at the cost of
+              # isolation.
+              name: my-vpc
+              subnet:
+                # Setting a subnet also switches machine-controller to
+                # RunStrategy: Always, so a stopped VM is restarted. Without it
+                # you get RunStrategy: Once.
+                #
+                # Size it to the control plane and nothing else if an external
+                # load balancer needs a static backend list - then you can list
+                # every address in the subnet instead of guessing which one
+                # kube-ovn assigned. Per-VM IPs cannot be pinned: the provider
+                # only ever sets ovn.kubernetes.io/logical_switch.
+                name: my-cluster-cp
+          template:
+            vcpus:
+              cores: 4
+            memory: 8Gi
+            primaryDisk:
+              osImage: "docker://quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64"
+              source: registry      # registry | http | pvc
+              pullMethod: node      # node | pod
+              size: "50Gi"
+              # A VM disk needs a class that can expose a raw block device.
+              storageClassName: my-vm-storage-class
+              storageAccessType: ReadWriteMany
+
+# Worker nodes, as MachineDeployments created by machine-controller. Same
+# provider spec, with one difference: KubeOne passes this through verbatim, so
+# clusterName has to be set explicitly.
+dynamicWorkers:
+  - name: worker
+    replicas: 3
+    providerSpec:
+      operatingSystem: ubuntu
+      operatingSystemSpec:
+        distUpgradeOnBoot: false
+      sshPublicKeys:
+        - "ssh-ed25519 AAAA...replace-me..."
+      cloudProviderSpec:
+        clusterName: my-cluster
+        virtualMachine:
+          evictionStrategy: LiveMigrate
+          providerNetwork:
+            name: kubeovn
+            vpc:
+              name: my-vpc
+              subnet:
+                name: my-cluster-workers
+          template:
+            vcpus:
+              cores: 8
+            memory: 16Gi
+            primaryDisk:
+              osImage: "docker://quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64"
+              source: registry
+              pullMethod: node
+              size: "100Gi"
+              storageClassName: my-vm-storage-class
+              storageAccessType: ReadWriteMany
+        # Spread workers over infra nodes / failure domains.
+        topologySpreadConstraints:
+          - maxSkew: "1"
+            topologyKey: kubernetes.io/hostname
+            whenUnsatisfiable: ScheduleAnyway
+
+# Scale workers automatically. Needs min/max annotations on the
+# MachineDeployment - see the KubeOne cluster-autoscaler addon docs.
+# addons:
+#   enable: true
+#   addons:
+#     - name: cluster-autoscaler
