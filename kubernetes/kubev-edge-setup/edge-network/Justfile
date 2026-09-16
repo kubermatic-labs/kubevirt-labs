@@ -1,0 +1,396 @@
+# k8c-edge - MikroTik Chateau LTE7 mobile lab
+#
+# All configuration lives in .env (copy .env.example to start).
+# Nothing device-specific is hardcoded below.
+
+set dotenv-load := true
+
+_default:
+    @just --list
+
+# --- from .env ---------------------------------------------------------------
+host      := env("CHATEAU_HOST", "10.77.33.1")
+host_ll   := env("CHATEAU_HOST_LL", "fe80::6f4:1cff:fef7:284c")
+user      := env("CHATEAU_USER", "admin")
+key       := env("CHATEAU_KEY", "")
+
+identity  := env("CHATEAU_IDENTITY", "k8c-edge")
+tz        := env("CHATEAU_TZ", "Europe/Berlin")
+ntp       := env("CHATEAU_NTP", "de.pool.ntp.org,pool.ntp.org")
+dns       := env("CHATEAU_DNS", "1.1.1.1,9.9.9.9")
+
+lan_ip    := env("CHATEAU_LAN_IP", "10.77.33.1")
+lan_cidr  := env("CHATEAU_LAN_CIDR", "24")
+lan_net   := env("CHATEAU_LAN_NET", "10.77.33.0")
+pool      := env("CHATEAU_POOL", "10.77.33.100-10.77.33.199")
+
+wan_if    := env("CHATEAU_WAN_IF", "ether1")
+radio24   := env("CHATEAU_RADIO_24", "wlan1")
+radio5    := env("CHATEAU_RADIO_5", "wlan2")
+lte_if    := env("CHATEAU_LTE_IF", "lte1")
+
+lan_ap    := env("CHATEAU_LAN_AP", "k8c_edge")
+lan_ap_psk := env("CHATEAU_LAN_AP_PSK", "")
+uplink_profile := env("CHATEAU_UPLINK_PROFILE", "wifi-uplink")
+
+dist_wired := env("CHATEAU_DIST_WIRED", "1")
+dist_wifi  := env("CHATEAU_DIST_WIFI", "2")
+dist_lte   := env("CHATEAU_DIST_LTE", "3")
+apn        := env("CHATEAU_APN", "internet")
+lte_roaming := env("CHATEAU_LTE_ROAMING", "yes")
+
+# --- BGP: MetalLB announcements ----------------------------------------------
+bgp_as        := env("CHATEAU_BGP_AS", "64512")
+bgp_peer_as   := env("CHATEAU_BGP_PEER_AS", "64513")
+bgp_peer      := env("CHATEAU_BGP_PEER", "10.77.33.196")
+bgp_local     := env("CHATEAU_BGP_LOCAL", "10.77.33.1")
+bgp_router_id := env("CHATEAU_BGP_ROUTER_ID", "10.77.33.1")
+bgp_pool      := env("CHATEAU_BGP_POOL", "10.77.34.0/24")
+sim_pin    := env("CHATEAU_SIM_PIN", "")
+
+wifi_ssid := env("WIFI_SSID", "")
+wifi_pass := env("WIFI_PASS", "")
+wifi_band := env("WIFI_BAND", "2.4")
+
+_keyopt := if key != "" { "-i " + key } else { "" }
+_sshopt := "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -o LogLevel=ERROR"
+_ssh := "ssh " + _keyopt + " " + _sshopt
+_scp := "scp " + _keyopt + " " + _sshopt
+
+# Show the resolved configuration, so you can see what .env actually gave you.
+config:
+    @echo "host            {{ host }}  (user {{ user }})"
+    @echo "link-local      {{ host_ll }}"
+    @echo "ssh key         {{ if key != '' { key } else { '(none - password auth)' } }}"
+    @echo "identity        {{ identity }}"
+    @echo "lan             {{ lan_ip }}/{{ lan_cidr }}  net {{ lan_net }}  pool {{ pool }}"
+    @echo "dns / ntp / tz  {{ dns }}  |  {{ ntp }}  |  {{ tz }}"
+    @echo "wan interface   {{ wan_if }}        distance {{ dist_wired }}"
+    @echo "radios          {{ radio24 }} (2.4)  {{ radio5 }} (5)   wifi distance {{ dist_wifi }}"
+    @echo "lte             {{ lte_if }}  apn {{ apn }}   distance {{ dist_lte }}"
+    @echo "local ap ssid   {{ lan_ap }}"
+    @echo "uplink profile  {{ uplink_profile }}"
+    @echo "venue ssid      {{ if wifi_ssid != '' { wifi_ssid } else { '(unset)' } }}  band {{ wifi_band }}  password {{ if wifi_pass != '' { 'set in .env' } else { '(will prompt)' } }}"
+
+# --- basics ------------------------------------------------------------------
+
+# Run any RouterOS command:  just ros '/system/resource/print'
+ros +cmd:
+    @{{ _ssh }} {{ user }}@{{ host }} {{ quote(cmd) }}
+
+# Same, over IPv6 link-local:  just ros-ll en7 '/ip/address/print'
+ros-ll iface +cmd:
+    @{{ _ssh }} {{ user }}@'{{ host_ll }}%{{ iface }}' {{ quote(cmd) }}
+
+# Interactive RouterOS terminal.
+shell:
+    @{{ _ssh }} -t {{ user }}@{{ host }}
+
+# Is it reachable, and on which path?
+ping-check:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ping -c1 -W500 "{{ host }}" >/dev/null 2>&1 && echo "icmp OK   {{ host }}" || echo "icmp FAIL {{ host }}"
+    {{ _ssh }} {{ user }}@{{ host }} '/system/identity/print' >/dev/null 2>&1 \
+      && echo "ssh  OK   {{ host }}" || echo "ssh  FAIL {{ host }}"
+
+# --- status ------------------------------------------------------------------
+
+# One-screen overview: identity, uplinks, addresses, radios.
+status:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    echo "== identity =="
+    {{ _ssh }} {{ user }}@{{ host }} '/system/identity/print'
+    echo "== uplinks (lowest active distance wins) =="
+    just uplinks
+    echo "== wan members =="
+    {{ _ssh }} {{ user }}@{{ host }} '/interface/list/member/print where list=WAN'
+    echo "== addresses =="
+    {{ _ssh }} {{ user }}@{{ host }} '/ip/address/print'
+    echo "== radios =="
+    {{ _ssh }} {{ user }}@{{ host }} ':foreach w in=[/interface/wireless/find] do={ :put ([/interface/wireless/get $w name]."  mode=".[/interface/wireless/get $w mode]."  ssid=".[/interface/wireless/get $w ssid]."  profile=".[/interface/wireless/get $w security-profile]) }'
+
+# Default routes and which one is carrying traffic.
+uplinks:
+    @{{ _ssh }} {{ user }}@{{ host }} ':foreach r in=[/ip/route/find dst-address="0.0.0.0/0"] do={ :put ("gw=".[/ip/route/get $r gateway]."  distance=".[/ip/route/get $r distance]."  active=".[/ip/route/get $r active]) }'
+
+# Signal, SSID and rate of a radio. Defaults to the 2.4 GHz one.
+wifi-status radio=radio24:
+    @{{ _ssh }} {{ user }}@{{ host }} '/interface/wireless/monitor {{ radio }} once' | head -8
+
+# LTE modem state: SIM, PIN, registration and signal.
+lte-status:
+    @{{ _ssh }} {{ user }}@{{ host }} '/interface/lte/monitor {{ lte_if }} once' | head -20
+
+# Power-cycle the modem so it re-scans for a SIM (needed after inserting one).
+lte-reset:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{ _ssh }} {{ user }}@{{ host }} '/interface/lte/set {{ lte_if }} disabled=yes'
+    sleep 5
+    {{ _ssh }} {{ user }}@{{ host }} '/interface/lte/set {{ lte_if }} disabled=no'
+    echo "waiting 35s for the modem..."
+    sleep 35
+    {{ _ssh }} {{ user }}@{{ host }} '/interface/lte/monitor {{ lte_if }} once' | head -4
+
+# Unlock a PIN-locked SIM. 3 wrong attempts and you need the PUK.
+lte-pin pin=sim_pin:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z '{{ pin }}' ]; then echo "no PIN given and CHATEAU_SIM_PIN is unset in .env"; exit 1; fi
+    echo "CAUTION: a wrong PIN burns one of three attempts. ctrl-c within 5s."
+    sleep 5
+    {{ _ssh }} {{ user }}@{{ host }} '/interface/lte/set {{ lte_if }} pin={{ pin }}'
+    sleep 25
+    {{ _ssh }} {{ user }}@{{ host }} '/interface/lte/monitor {{ lte_if }} once' | head -8
+
+# Re-unlock the SIM only if it has re-locked. Idempotent, safe to repeat.
+lte-unlock:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    st=$({{ _ssh }} {{ user }}@{{ host }} '/interface/lte/monitor {{ lte_if }} once' | awk '/pin-status:/{print $2, $3, $4}')
+    echo "pin-status: $st"
+    case "$st" in
+      ok*) echo "already unlocked, nothing to do" ;;
+      *)   just lte-pin ;;
+    esac
+
+# Recent log, newest last.
+log lines="30":
+    @{{ _ssh }} {{ user }}@{{ host }} '/log/print' | tail -{{ lines }}
+
+# DHCP leases handed out to the lab.
+leases:
+    @{{ _ssh }} {{ user }}@{{ host }} '/ip/dhcp-server/lease/print'
+
+# --- wifi uplink -------------------------------------------------------------
+
+# What is on the air. band is 2.4 or 5:  just scan 2.4
+scan band=wifi_band duration="10":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ band }}" in
+      2.4|24|2) radio={{ radio24 }} ;;
+      5|5g)     radio={{ radio5 }} ;;
+      *) echo "band must be 2.4 or 5"; exit 1 ;;
+    esac
+    echo "scanning $radio for {{ duration }}s (briefly interrupts that radio)"
+    {{ _ssh }} {{ user }}@{{ host }} ":local r [/interface/wireless/scan $radio duration={{ duration }} as-value]; \
+      :foreach n in=\$r do={ :put ([:tostr (\$n->\"ssid\")].\"  |  \".[:tostr (\$n->\"channel\")].\"  |  sig=\".[:tostr (\$n->\"sig\")].\"  |  encrypted=\".[:tostr (\$n->\"privacy\")]) }" \
+      | sed 's/^  |/(hidden)  |/' | sort -u
+
+# Join the uplink defined by WIFI_SSID / WIFI_BAND in .env, no arguments.
+wifi-up:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "{{ wifi_ssid }}" ]; then
+      echo "WIFI_SSID is not set in .env - use 'just wifi-24 <SSID>' instead"; exit 1
+    fi
+    case "{{ wifi_band }}" in
+      2.4|24|2) just wifi-24 {{ quote(wifi_ssid) }} {{ quote(wifi_pass) }} ;;
+      5|5g)     just wifi-5  {{ quote(wifi_ssid) }} {{ quote(wifi_pass) }} ;;
+      *) echo "WIFI_BAND must be 2.4 or 5"; exit 1 ;;
+    esac
+
+# Join a 2.4 GHz network as the uplink (password prompted if omitted).
+wifi-24 ssid=wifi_ssid password=wifi_pass:
+    @just _wifi-join {{ radio24 }} wan-wifi24-on {{ quote(ssid) }} {{ quote(password) }}
+
+# Join a 5 GHz network as the uplink (password prompted if omitted).
+wifi-5 ssid=wifi_ssid password=wifi_pass:
+    @just _wifi-join {{ radio5 }} wan-wifi5-on {{ quote(ssid) }} {{ quote(password) }}
+
+_wifi-join radio script ssid password:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z '{{ ssid }}' ]; then echo "no SSID given, and WIFI_SSID is unset in .env"; exit 1; fi
+    pass='{{ password }}'
+    if [ -z "$pass" ]; then read -rsp "PSK for {{ ssid }}: " pass; echo; fi
+    echo "1/3  flipping {{ radio }} to station mode"
+    {{ _ssh }} {{ user }}@{{ host }} '/system/script/run {{ script }}'
+    echo "2/3  setting the key on the {{ uplink_profile }} profile"
+    {{ _ssh }} {{ user }}@{{ host }} "/interface/wireless/security-profiles/set [find name={{ uplink_profile }}] wpa-pre-shared-key=\"$pass\" wpa2-pre-shared-key=\"$pass\""
+    echo "3/3  setting the network name on {{ radio }}"
+    {{ _ssh }} {{ user }}@{{ host }} '/interface/wireless/set {{ radio }} ssid="{{ ssid }}"'
+    echo "waiting for association..."
+    for i in $(seq 1 12); do
+      sleep 5
+      st=$({{ _ssh }} {{ user }}@{{ host }} '/interface/wireless/monitor {{ radio }} once' 2>/dev/null | awk '/status:/{print $2}')
+      echo "  [$i] $st"
+      if [ "$st" = "connected-to-ess" ]; then
+        sleep 6; echo
+        {{ _ssh }} {{ user }}@{{ host }} '/ip/dhcp-client/print detail where comment="WAN-wifi"' | grep -E 'status|address|gateway' || true
+        echo; just uplinks; exit 0
+      fi
+    done
+    echo
+    echo "did NOT associate. Usual causes:"
+    echo "  - wrong PSK"
+    echo "  - the SSID is on the other band (just scan 2.4 / just scan 5)"
+    echo "  - the network is WPA3-only; the legacy wireless driver cannot join it"
+    exit 1
+
+# Both radios back to being local APs, no WiFi uplink.
+wifi-off:
+    @{{ _ssh }} {{ user }}@{{ host }} '/system/script/run wan-wifi-off'
+    @echo "both radios are local APs on {{ lan_ap }} again"
+    @just uplinks
+
+# --- testing -----------------------------------------------------------------
+
+# Kill the wired uplink, prove the backup carries traffic, then restore.
+test-failover:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "== before =="; just uplinks
+    echo; echo "== disabling {{ wan_if }} (simulated cable pull) =="
+    {{ _ssh }} {{ user }}@{{ host }} '/interface/ethernet/set {{ wan_if }} disabled=yes'
+    sleep 8; just uplinks
+    echo "-- internet still up? --"
+    {{ _ssh }} {{ user }}@{{ host }} '/ping 1.1.1.1 count=3' | tail -2
+    {{ _ssh }} {{ user }}@{{ host }} ':put ("dns: ".[:resolve "github.com"])'
+    echo; echo "== restoring {{ wan_if }} =="
+    {{ _ssh }} {{ user }}@{{ host }} '/interface/ethernet/set {{ wan_if }} disabled=no'
+    sleep 12; just uplinks
+
+# End-to-end reachability from this machine through the router.
+test-internet:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{ _ssh }} {{ user }}@{{ host }} '/ping 1.1.1.1 count=3' | tail -2
+    {{ _ssh }} {{ user }}@{{ host }} ':put ("router dns: ".[:resolve "github.com"])'
+    echo "lan dns via router: $(dig +short +time=3 +tries=1 @{{ host }} github.com | head -1)"
+
+# --- config ------------------------------------------------------------------
+
+# Render k8c-edge.rsc.tmpl with the .env values, without applying it.
+render:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sed -e 's|__IDENTITY__|{{ identity }}|g' \
+        -e 's|__TZ__|{{ tz }}|g' \
+        -e 's|__NTP__|{{ ntp }}|g' \
+        -e 's|__DNS__|{{ dns }}|g' \
+        -e 's|__LAN_IP__|{{ lan_ip }}|g' \
+        -e 's|__LAN_CIDR__|{{ lan_cidr }}|g' \
+        -e 's|__LAN_NET__|{{ lan_net }}|g' \
+        -e 's|__POOL__|{{ pool }}|g' \
+        -e 's|__WAN_IF__|{{ wan_if }}|g' \
+        -e 's|__RADIO_24__|{{ radio24 }}|g' \
+        -e 's|__RADIO_5__|{{ radio5 }}|g' \
+        -e 's|__LTE_IF__|{{ lte_if }}|g' \
+        -e 's|__LAN_AP__|{{ lan_ap }}|g' \
+        -e 's|__LAN_AP_PSK__|{{ lan_ap_psk }}|g' \
+        -e 's|__UPLINK_PROFILE__|{{ uplink_profile }}|g' \
+        -e 's|__DIST_WIRED__|{{ dist_wired }}|g' \
+        -e 's|__DIST_WIFI__|{{ dist_wifi }}|g' \
+        -e 's|__DIST_LTE__|{{ dist_lte }}|g' \
+        -e 's|__APN__|{{ apn }}|g' \
+        -e 's|__LTE_ROAMING__|{{ lte_roaming }}|g' \
+        k8c-edge.rsc.tmpl > k8c-edge.rendered.rsc
+    left=$(grep -oE '__[A-Z0-9_]+__' k8c-edge.rendered.rsc | sort -u || true)
+    if [ -n "$left" ]; then echo "UNSUBSTITUTED PLACEHOLDERS:"; echo "$left"; exit 1; fi
+    echo "wrote k8c-edge.rendered.rsc (gitignored)"
+
+# Render and apply the config to the router. Idempotent.
+apply: render
+    @{{ _scp }} k8c-edge.rendered.rsc {{ user }}@{{ host }}:k8c-edge-apply.rsc
+    @{{ _ssh }} {{ user }}@{{ host }} '/import file-name=k8c-edge-apply.rsc'
+    @just uplinks
+
+# Upload and import the switching scripts.
+push-scripts:
+    @{{ _scp }} workspaces.rsc {{ user }}@{{ host }}:workspaces.rsc
+    @{{ _ssh }} {{ user }}@{{ host }} '/import file-name=workspaces.rsc'
+    @{{ _ssh }} {{ user }}@{{ host }} ':foreach s in=[/system/script/find] do={:put ([/system/script/get $s name]." :: ".[/system/script/get $s comment])}'
+
+# Pull the running config into k8c-edge.export.rsc, identity + uplink SSID redacted.
+fetch-config:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{ _ssh }} {{ user }}@{{ host }} '/export file=k8c-edge' >/dev/null
+    sleep 3
+    {{ _scp }} {{ user }}@{{ host }}:k8c-edge.rsc /tmp/k8c-edge-raw.rsc
+    LOCAL_AP='{{ lan_ap }}' python3 - <<'PY'
+    import re, os
+    local_ap = os.environ['LOCAL_AP']
+    src = open('/tmp/k8c-edge-raw.rsc').read()
+    src = re.sub(r'^# (serial number|software id) = .*$', r'# \1 = <redacted>', src, flags=re.M)
+    # Any SSID other than our own local AP is transient venue state, not config
+    # worth versioning. Values appear bare (ssid=x) and escaped (ssid=\"x\").
+    def red(m):
+        core = m.group(2).replace('\\"', '').strip('"')
+        return m.group(0) if core == local_ap else m.group(1) + '<uplink-redacted>'
+    src = re.sub(r'(ssid=)(\\"[^"\\]*\\"|[^\s]+)', red, src)
+    open('k8c-edge.export.rsc', 'w').write(src)
+    PY
+    rm -f /tmp/k8c-edge-raw.rsc
+    echo "wrote k8c-edge.export.rsc"
+
+# --- workspace ---------------------------------------------------------------
+
+# Snapshot the running config as the k8c-edge workspace (on the router).
+save:
+    @{{ _ssh }} {{ user }}@{{ host }} '/system/script/run ws-save'
+    @{{ _ssh }} {{ user }}@{{ host }} '/file/print where name~"k8c-edge|before-claude"'
+
+# Restore the k8c-edge workspace. REBOOTS the router.
+restore:
+    @echo "this reboots the router. ctrl-c within 5s to abort."
+    @sleep 5
+    @{{ _ssh }} {{ user }}@{{ host }} '/system/script/run ws-k8c-edge' || true
+
+# Restore the original pre-Claude stock config. REBOOTS the router.
+stock:
+    @echo "this restores the FACTORY config and reboots. ctrl-c within 5s to abort."
+    @sleep 5
+    @{{ _ssh }} {{ user }}@{{ host }} '/system/script/run ws-stock' || true
+
+# Download the binary backup. NOT for git - it contains the PSK and SSH keys.
+fetch-backup dest="/tmp":
+    @{{ _scp }} {{ user }}@{{ host }}:k8c-edge.backup {{ dest }}/k8c-edge.backup
+    @echo "saved to {{ dest }}/k8c-edge.backup - keep it out of the repo"
+
+# --- BGP with the KubeV cluster ----------------------------------------------
+
+# Render bgp-metallb.rsc.tmpl from .env.
+bgp-render:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sed -e 's|__BGP_AS__|{{ bgp_as }}|g' \
+        -e 's|__BGP_PEER_AS__|{{ bgp_peer_as }}|g' \
+        -e 's|__BGP_PEER__|{{ bgp_peer }}|g' \
+        -e 's|__BGP_LOCAL__|{{ bgp_local }}|g' \
+        -e 's|__BGP_ROUTER_ID__|{{ bgp_router_id }}|g' \
+        -e 's|__BGP_POOL__|{{ bgp_pool }}|g' \
+        bgp-metallb.rsc.tmpl > bgp-metallb.rendered.rsc
+    left=$(grep -oE '__[A-Z0-9_]+__' bgp-metallb.rendered.rsc | sort -u || true)
+    if [ -n "$left" ]; then echo "UNSUBSTITUTED PLACEHOLDERS:"; echo "$left"; exit 1; fi
+    echo "wrote bgp-metallb.rendered.rsc (gitignored)"
+
+# Set up the BGP session on the router. Idempotent.
+bgp-apply: bgp-render
+    @{{ _scp }} bgp-metallb.rendered.rsc {{ user }}@{{ host }}:bgp-metallb.rsc
+    @{{ _ssh }} {{ user }}@{{ host }} '/import file-name=bgp-metallb.rsc'
+    @just bgp-status
+
+# Session state, learned prefixes and the pinned router-id.
+bgp-status:
+    @echo "-- session --"
+    @{{ _ssh }} {{ user }}@{{ host }} '/routing/bgp/session/print detail' || true
+    @echo "-- router-id (must be {{ bgp_router_id }}, not an uplink address) --"
+    @{{ _ssh }} {{ user }}@{{ host }} '/routing/id/print detail where name=lan' || true
+    @echo "-- routes learned from the cluster --"
+    @{{ _ssh }} {{ user }}@{{ host }} '/ip/route/print where bgp' || true
+
+# Every address the cluster is currently announcing.
+bgp-routes:
+    @{{ _ssh }} {{ user }}@{{ host }} '/ip/route/print detail where dst-address in {{ bgp_pool }}' || true
+
+# Tear the peering down again, including the filter and the pinned router-id.
+bgp-remove:
+    @{{ _ssh }} {{ user }}@{{ host }} '/routing/bgp/connection/remove [find name=metallb]' || true
+    @{{ _ssh }} {{ user }}@{{ host }} ':foreach r in=[/routing/filter/rule/find chain="metallb-in"] do={/routing/filter/rule/remove $r}' || true
+    @{{ _ssh }} {{ user }}@{{ host }} '/routing/id/remove [find name=lan]' || true
+    @echo "BGP peering removed"

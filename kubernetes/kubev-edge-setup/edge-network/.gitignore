@@ -1,0 +1,11 @@
+# RouterOS binary backups contain the WiFi PSK, SSH keys and user hashes.
+# Keep them on the router and in your password manager, never in git.
+*.backup
+
+# Local configuration. May hold a venue's WiFi password and the path to an
+# SSH private key. .env.example is the committed, secret-free template.
+.env
+
+# Rendered from k8c-edge.rsc.tmpl by `just apply` - regenerate, do not commit.
+k8c-edge.rendered.rsc
+bgp-metallb.rendered.rsc

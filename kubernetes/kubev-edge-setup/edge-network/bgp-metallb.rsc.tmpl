@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# BGP peering with the MetalLB speaker on the KubeV node.
+#
+# MetalLB announces each LoadBalancer service address as a /32 into this
+# session; the router installs it with the node as next hop. Every LAN client
+# already uses the router as its default gateway, so service addresses become
+# reachable with no client-side configuration and no ARP tricks.
+#
+# Rendered from .env by `just bgp-render`, applied by `just bgp-apply`.
+# Removed again by `just bgp-remove`. Safe to re-run: every section is
+# idempotent.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── router-id ────────────────────────────────────────────────────────────────
+# The default router-id is DYNAMIC and tracks the active uplink - on this box it
+# currently resolves to the LTE address. An uplink failover would therefore
+# change the router-id and tear down every BGP session. Pin it to the LAN
+# address, which never moves no matter which uplink is carrying traffic.
+/routing/id
+:if ([:len [find name="lan"]] = 0) do={ add name=lan id=__BGP_ROUTER_ID__ } else={ set [find name="lan"] id=__BGP_ROUTER_ID__ }
+
+# ── inbound filter ───────────────────────────────────────────────────────────
+# Accept ONLY the MetalLB pool. Without this the cluster could inject any prefix
+# into the router - a default route included - and quietly take over the lab's
+# routing. Everything outside the pool is rejected.
+/routing/filter/rule
+:foreach r in=[find chain="metallb-in"] do={ remove $r }
+add chain=metallb-in comment="accept only the MetalLB pool" \
+    rule="if (dst in __BGP_POOL__) { accept } else { reject }"
+
+# ── the session ──────────────────────────────────────────────────────────────
+# eBGP, private ASNs. MetalLB initiates the connection, so listen=yes is the
+# part that matters; connect=yes lets the router re-establish it first after a
+# node reboot.
+/routing/bgp/connection
+:if ([:len [find name="metallb"]] > 0) do={ remove [find name="metallb"] }
+add name=metallb comment="MetalLB speaker on the KubeV node" disabled=no \
+    as=__BGP_AS__ router-id=lan routing-table=main \
+    local.address=__BGP_LOCAL__ local.role=ebgp \
+    remote.address=__BGP_PEER__ remote.as=__BGP_PEER_AS__ \
+    address-families=ip \
+    hold-time=90s keepalive-time=30s \
+    input.filter=metallb-in \
+    connect=yes listen=yes
+
+:log info "bgp-metallb: peering with __BGP_PEER__ as AS__BGP_AS__ <-> AS__BGP_PEER_AS__, accepting __BGP_POOL__"

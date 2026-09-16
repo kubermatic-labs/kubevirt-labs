@@ -1,0 +1,76 @@
+# ============================================================
+#  k8c-edge - MikroTik Chateau LTE7 mobile lab
+#
+#  TEMPLATE. Do not apply this file directly - the placeholders are
+#  substituted from .env by `just apply` (or `just render` to preview).
+#
+#  LAN __LAN_IP__/__LAN_CIDR__
+#  Uplinks: __WAN_IF__ wired (d__DIST_WIRED__)
+#           > __RADIO_24__/__RADIO_5__ wifi (d__DIST_WIFI__)
+#           > __LTE_IF__ (d__DIST_LTE__)
+# ============================================================
+:log info "k8c-edge: applying"
+
+/system/identity/set name=__IDENTITY__
+/system/ntp/client/set enabled=yes servers=__NTP__
+/system/clock/set time-zone-name=__TZ__
+/ip/dns/set servers=__DNS__ allow-remote-requests=yes
+
+# ---- __WAN_IF__ = wired WAN -------------------------------
+:if ([:len [/interface/bridge/port/find interface=__WAN_IF__]] > 0) do={ \
+    /interface/bridge/port/remove [find interface=__WAN_IF__] }
+:if ([:len [/ip/dhcp-client/find comment="WAN-wired"]] = 0) do={ \
+    /ip/dhcp-client/add interface=__WAN_IF__ disabled=no use-peer-dns=no \
+      use-peer-ntp=no add-default-route=yes default-route-distance=__DIST_WIRED__ \
+      comment="WAN-wired" }
+:if ([:len [/interface/list/member/find list=WAN interface=__WAN_IF__]] = 0) do={ \
+    /interface/list/member/add list=WAN interface=__WAN_IF__ }
+
+# ---- __LTE_IF__ = last-resort WAN (needs a SIM) -----------
+/interface/lte/apn/set [find name=default] apn=__APN__ use-peer-dns=no \
+    add-default-route=yes default-route-distance=__DIST_LTE__
+# Roaming is OFF in the factory config, which means the modem will not attach at
+# all outside the home network - the one situation a travelling lab needs it.
+# Changing this re-initialises the modem; it re-registers in about 15 seconds.
+# Watch the cost outside the EU.
+/interface/lte/set [find name=__LTE_IF__] allow-roaming=__LTE_ROAMING__
+:if ([:len [/interface/list/member/find list=WAN interface=__LTE_IF__]] = 0) do={ \
+    /interface/list/member/add list=WAN interface=__LTE_IF__ }
+
+# ---- wifi uplink security profile -------------------------
+# Wider than the local AP on purpose: venue networks are often older than
+# anything you would run at home. The key is set per venue, not here.
+:if ([:len [/interface/wireless/security-profiles/find name=__UPLINK_PROFILE__]] = 0) do={ \
+    /interface/wireless/security-profiles/add name=__UPLINK_PROFILE__ \
+      mode=dynamic-keys authentication-types=wpa-psk,wpa2-psk \
+      unicast-ciphers=tkip,aes-ccm group-ciphers=tkip,aes-ccm \
+      wpa-pre-shared-key="CHANGEME" wpa2-pre-shared-key="CHANGEME" }
+
+# ---- local AP security profile ----------------------------
+# The radios below use the `default` profile. Without this block that profile is
+# whatever the device already holds - on a factory-reset router that means NO
+# KEY, i.e. an open k8c_edge. An empty CHATEAU_LAN_AP_PSK leaves the existing
+# profile untouched rather than opening it.
+:local appsk "__LAN_AP_PSK__"
+:if ([:len $appsk] > 0) do={ \
+    /interface/wireless/security-profiles/set [find name=default] \
+      mode=dynamic-keys authentication-types=wpa-psk,wpa2-psk \
+      unicast-ciphers=aes-ccm group-ciphers=aes-ccm \
+      wpa-pre-shared-key=$appsk wpa2-pre-shared-key=$appsk } else={ \
+    :log warning "k8c-edge: CHATEAU_LAN_AP_PSK empty - local AP profile left as-is" }
+
+# ---- both radios start as local APs -----------------------
+/interface/wireless/set __RADIO_24__ mode=ap-bridge ssid="__LAN_AP__" \
+    security-profile=default default-authentication=yes disabled=no
+/interface/wireless/set __RADIO_5__ mode=ap-bridge ssid="__LAN_AP__" \
+    security-profile=default default-authentication=yes disabled=no
+
+# ---- LAN --------------------------------------------------
+/ip/pool/set [find name=default-dhcp] ranges=__POOL__
+/ip/dhcp-server/network/set [find] address=__LAN_NET__/__LAN_CIDR__ \
+    gateway=__LAN_IP__ dns-server=__LAN_IP__
+/ip/address/set [find interface=bridge] address=__LAN_IP__/__LAN_CIDR__ \
+    network=__LAN_NET__
+/ip/dhcp-server/set [find name=defconf] lease-time=10m
+
+:log info "k8c-edge: applied"
