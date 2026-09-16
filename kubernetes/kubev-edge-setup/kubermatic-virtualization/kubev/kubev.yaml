@@ -1,0 +1,52 @@
+apiVersion: virtualization.k8c.io/v1alpha1
+kind: KubeVCluster
+
+# Default VPC Configuration
+networkConfiguration:
+  dnsServer: 10.77.33.1
+  # POD CIDR range
+  networkCIDR: 172.25.0.0/24
+  # Gateway at POD default kube-ovn network
+  gatewayIP: 172.25.0.1
+
+
+#offlineSettings:
+#  enabled: true
+#  containerRegistry:
+#    address: 10.0.1.2:5000
+#    insecure: true
+#  helmRegistry:
+#    address: 10.0.1.2:5000
+#    insecure: true
+#  packageRepository: 10.0.1.2
+#
+
+# Default VPC: default external announcement
+loadBalancer:
+  metallb:
+    ipRange: 10.77.33.20-10.77.33.50
+apiEndpoint:
+  host: 10.77.33.10
+controlPlane:
+  hosts:
+    - address: 10.77.33.196
+      sshUsername: ubuntu
+      sshPrivateKeyFile: /data/kubernetes/kubev-edge-setup/.local/id_rsa
+
+#staticWorkers:
+#  hosts:
+#    - address: 10.0.2.214
+#      sshUsername: root
+#      sshPrivateKeyFile: /data/kubernetes/kubev-edge-setup/.local/id_rsa
+
+dashboard:
+  enabled: true
+  # Public URL of the UI. Only consumed for OIDC redirects - with basic auth the
+  # SPA talks to its own origin, so the MetalLB VIP below works without it. The
+  # UI is published by kubev/dashboard-svc-lb.yaml (`just kubev-expose-dashboard`).
+  # dashboardURL: http://10.77.33.20
+  auth:
+    basic: {}
+
+storage:
+  none: {}

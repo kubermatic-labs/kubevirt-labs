@@ -1,0 +1,80 @@
+# Helmfile for Kubernetes Storage (Rook Ceph v1.19)
+#
+# Usage:
+#   helmfile sync                    # Install/upgrade all releases
+#   helmfile diff                    # Show changes before applying
+#   helmfile destroy                 # Uninstall all releases
+#
+# Prerequisites:
+#   - helm 3.13+ installed
+#   - helmfile installed (https://github.com/helmfile/helmfile)
+#   - kubectl configured with cluster access
+#   - Block devices available on nodes (e.g., /dev/sdb)
+#   - Linux kernel 4.17+ (for full CephFS support)
+#
+# After helmfile sync, apply the CephCluster:
+#   kubectl apply -f storage/rook-ceph/ceph-cluster.yaml
+#   kubectl apply -f storage/rook-ceph/ceph-storageclass.yaml
+#
+# Reference: https://rook.io/docs/rook/v1.19
+
+helmDefaults:
+  wait: true
+  timeout: 900
+  createNamespace: true
+
+releases:
+  # Reference: https://github.com/rancher/local-path-provisioner
+
+  # local-path-provisioner - dynamic hostPath PV provisioning for a single node.
+  # The chart is referenced directly from the upstream GitHub repo (v0.0.37)
+  # because it is not published to any public helm chart repo.
+  # Chart creates the controller Deployment + RBAC + helper-pod machinery.
+  # storageClass.create is disabled: our own storageclass.yaml provides the
+  # kubev-vms / kubev-main classes.
+  - name: local-path-provisioner
+    namespace: local-path-storage
+    chart: git::https://github.com/rancher/local-path-provisioner.git@deploy/chart/local-path-provisioner?ref=v0.0.37
+    version: "0.0.37"
+    values:
+      - replicaCount: 1
+      - storageClass:
+          create: false
+          # MUST match `provisioner:` in storage/local-path/storageclass.yaml.
+          # The chart feeds this same value to the controller's
+          # `--provisioner-name` flag (templates/_helpers.tpl ->
+          # local-path-provisioner.provisionerName), and when it is unset the
+          # chart generates `cluster.local/local-path-provisioner` instead.
+          # Our hand-written classes declare `rancher.io/local-path` (the name
+          # the upstream plain manifest uses, see README fallback), so leaving
+          # this out makes the controller listen on a name no StorageClass
+          # references: every PVC sits Pending forever on
+          # "Waiting for a volume to be created ... by the external
+          # provisioner", with NOTHING logged by the provisioner and no event
+          # on the PVC, because it never sees the claim as its own.
+          provisionerName: rancher.io/local-path
+      - nodePathMap:
+          - node: DEFAULT_PATH_FOR_NON_LISTED_NODES
+            paths:
+              - /opt/local-path-provisioner
+    hooks:
+      - events: ["postsync"]
+        showlogs: true
+        command: "sh"
+        args:
+          - "-c"
+          - |
+            echo "Waiting for local-path-provisioner to be ready..."
+            kubectl -n local-path-storage wait --for=condition=available deployment/local-path-provisioner --timeout=300s
+            echo "Applying StorageClasses (kubev-main, kubev-vms)..."
+            kubectl apply -f storage/local-path/storageclass.yaml
+            echo "Applying CDI config (scratchSpaceStorageClass: kubev-vms)..."
+            kubectl apply -f storage/cdi-config.yaml
+            echo "Pinning CDI StorageProfiles to Filesystem + RWO..."
+            # CDI owns these objects, so wait for it to create them before
+            # patching - on a fresh cluster the profiles appear a moment after
+            # the StorageClasses do.
+            for sc in kubev-vms kubev-main; do
+              kubectl wait --for=create storageprofile/"$sc" --timeout=120s
+            done
+            kubectl apply -f storage/local-path/storageprofile.yaml

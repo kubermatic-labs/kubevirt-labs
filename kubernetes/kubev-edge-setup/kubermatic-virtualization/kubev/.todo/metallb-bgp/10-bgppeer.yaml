@@ -1,0 +1,20 @@
+# eBGP session to the Chateau (k8c-edge, 10.77.33.1).
+#
+# The speaker initiates the connection; the router side is configured by
+# `just bgp-apply` in edge-network/. Both ASNs are private (64512-65534).
+#
+# The router pins its router-id to 10.77.33.1 for this session. Its default
+# router-id is dynamic and follows the active uplink, so without that pin an
+# LTE/WiFi failover would reset the session.
+apiVersion: metallb.io/v1beta2
+kind: BGPPeer
+metadata:
+  name: chateau
+  namespace: metallb-system
+spec:
+  myASN: 64513
+  peerASN: 64512
+  peerAddress: 10.77.33.1
+  peerPort: 179
+  holdTime: 90s
+  keepaliveTime: 30s

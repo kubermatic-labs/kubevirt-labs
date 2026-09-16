@@ -1,0 +1,19 @@
+# Announce the routed pool to the Chateau.
+#
+# aggregationLength: 32 advertises one /32 per Service, so the router's table
+# shows exactly which addresses are live and a withdrawn Service disappears
+# immediately. Set it to 24 to announce the whole pool as a single route
+# instead - fewer routes, but the router can no longer tell which addresses
+# actually exist.
+apiVersion: metallb.io/v1beta1
+kind: BGPAdvertisement
+metadata:
+  name: bgp-adv
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - bgp-pool
+  aggregationLength: 32
+  localPref: 100
+  peers:
+    - chateau

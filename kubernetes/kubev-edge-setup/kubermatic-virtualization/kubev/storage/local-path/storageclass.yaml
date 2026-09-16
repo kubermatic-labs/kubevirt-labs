@@ -1,0 +1,58 @@
+# Local-path StorageClasses for KubeVirt (rancher.io/local-path)
+# Reference: https://github.com/rancher/local-path-provisioner
+#
+# Apply after the local-path-provisioner controller is ready (via the
+# helmfile postsync hook):
+#   kubectl apply -f storageclass.yaml
+#
+# The `provisioner:` value below is COUPLED to storageClass.provisionerName in
+# kubev/helmfile.yaml - the chart hands that same value to the controller's
+# --provisioner-name flag. If the two drift apart, nothing provisions and every
+# PVC hangs Pending on "Waiting for a volume to be created ... by the external
+# provisioner", with no provisioner log line and no event on the claim.
+# Check both sides agree with:
+#   kubectl get sc kubev-vms -o jsonpath='{.provisioner}{"\n"}'
+#   kubectl -n local-path-storage get deploy local-path-provisioner \
+#     -o jsonpath='{.spec.template.spec.containers[0].args}{"\n"}'
+#
+# Verify:
+#   kubectl get sc
+#
+# Trade-offs (single edge device):
+#   - Filesystem only (no volumeMode: Block)
+#   - ReadWriteOnce only. RWX is not merely unsupported, it is REJECTED:
+#     "NodePath only supports ReadWriteOnce and ReadWriteOncePod (1.22+)
+#     access modes" - consumers must ask for RWO or they never bind.
+#   - No volume expansion, no size enforcement
+# Windows golden-image (Block+RWX) and live-migration flows must use
+# the Longhorn / Rook Ceph classes instead.
+
+---
+# kubev-main - default general-purpose runtime class
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: kubev-main
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+
+---
+# kubev-vms - StorageClass for KubeVirt VMs (preserves the VM contract)
+# Serves the repo's primary Linux VM (linux/00_kubevirt-vm-ubuntu-kkp-like.yaml)
+# and containerdisk-based VMs: Filesystem, RWO.
+# Annotated is-default-virt-class so CDI and e.g. packer use it.
+# WaitForFirstConsumer binds to the single edge node.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: kubev-vms
+  annotations:
+    storageclass.cdi.kubevirt.io/is-default-virt-class: "true"
+  labels:
+    app: kubevirt
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete

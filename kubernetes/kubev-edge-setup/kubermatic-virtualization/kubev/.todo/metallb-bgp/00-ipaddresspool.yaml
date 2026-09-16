@@ -1,0 +1,23 @@
+# Routed pool, announced to the Chateau over BGP.
+#
+# Deliberately OUTSIDE the lab LAN (10.77.33.0/24). The existing L2 pool
+# (ippool-kubev, 10.77.33.20-50) lives inside the LAN and works by answering
+# ARP; this one works by routing. Keeping them on separate prefixes means the
+# two modes never fight over the same address, and the router never has both a
+# connected route and a BGP route for the same destination.
+#
+# autoAssign: false so existing Services keep landing in the L2 pool. Opt in
+# per Service with:
+#   metadata.annotations:
+#     metallb.io/address-pool: bgp-pool
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: bgp-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 10.77.34.0/24
+  autoAssign: false
+  # Skip .0 and .255 - some consumer stacks still treat them as broadcast.
+  avoidBuggyIPs: true

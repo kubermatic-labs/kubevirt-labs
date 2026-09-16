@@ -1,0 +1,60 @@
+# CDI StorageProfile overrides for the local-path classes.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# rancher.io/local-path can only serve `volumeMode: Filesystem` + RWO. It does
+# not merely prefer them - it rejects anything else outright:
+#   "rancher.io/local-path does not support block volume provisioning"
+#   "NodePath only supports ReadWriteOnce and ReadWriteOncePod (1.22+) access modes"
+# and the PVC then sits Pending forever.
+#
+# CDI keeps one StorageProfile per StorageClass and uses it to fill in the
+# volumeMode / accessModes that a caller left unset. local-path is NOT in CDI's
+# table of known provisioners, so both profiles came up with an EMPTY
+# claimPropertySets - CDI had nothing to go on and callers were free to ask for
+# Block. Pinning claimPropertySets here is what makes Filesystem+RWO the
+# answer every consumer gets:
+#
+#   * KubeV dashboard / kubevirt-manager VMs
+#   * KubeOne + machine-controller worker and control-plane VMs. The KubeVirt
+#     provider has NO volumeMode field at all (only storageClassName and
+#     storageAccessType), and never sets volumeMode on the DataVolume - it
+#     leaves it to CDI, i.e. to this profile. It also reads
+#     status.claimPropertySets to pick an access mode when storageAccessType is
+#     empty, and would choose RWX the moment a profile advertised it.
+#   * Anything else creating a DataVolume with spec.storage
+#
+# Order matters on a fresh cluster: CDI creates these objects itself, so this
+# file PATCHES existing resources rather than creating them. The helmfile
+# postsync hook applies it after CDI has settled.
+#
+# Verify the override took (status should mirror spec):
+#   kubectl get storageprofile kubev-vms \
+#     -o jsonpath='{.status.claimPropertySets}{"\n"}'
+#
+# If this cluster is ever moved to Rook Ceph / Longhorn, DELETE this file's
+# resources instead of editing them - those backends do support Block + RWX,
+# which the Windows golden-image pipeline needs, and CDI will then detect the
+# right properties on its own.
+
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: StorageProfile
+metadata:
+  name: kubev-vms
+spec:
+  claimPropertySets:
+    - accessModes:
+        - ReadWriteOnce
+      volumeMode: Filesystem
+
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: StorageProfile
+metadata:
+  name: kubev-main
+spec:
+  claimPropertySets:
+    - accessModes:
+        - ReadWriteOnce
+      volumeMode: Filesystem

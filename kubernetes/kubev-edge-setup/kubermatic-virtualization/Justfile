@@ -1,0 +1,125 @@
+
+_default:
+    @just --list
+set shell := ["bash", "-uc"]
+
+KUBEV_FOLDER := source_directory()/"kubev"
+KUBEV_KUBECONFIG := KUBEV_FOLDER/"kubev-kubeconfig.crypt.yaml"
+
+#### Local KubeV Tooling
+KUBEV_TF_INFRA := source_directory()/"./keepalived-lb-tf-infra"
+DOCKER_EXTRA_FLAG := "--detach"
+CONTAINER_NAME := "kubev-edge"
+# Tooling container image. Override per invocation via the environment, e.g.
+#   TOOLING_CONTAINER_TAG=kubev-v1.3.0 just local-kubev-tooling-start
+DOCKER_REPO := env("DOCKER_REPO", "quay.io/kubermatic/kubermatic-virtualization-tooling")
+TOOLING_CONTAINER_TAG := env("TOOLING_CONTAINER_TAG", "kubev-v1.2.0-patch_kkp-v2.30.6-2026-08-09")
+
+# KubeV registry / UI credentials (KUBEV_USERNAME, KUBEV_PASSWORD). Untracked, lives in ../.local
+# next to the deployment SSH key, and is handed to the tooling container as-is.
+KUBEV_ENV_FILE := source_directory()/"../.local/kubev.env"
+
+# Export the credentials into every recipe below. The path resolves against this file, so it holds
+# when `just` is run from a subdirectory; a missing file is not an error, the variables are then
+# simply unset. The literal must mirror KUBEV_ENV_FILE above - settings are a const context, so
+# source_directory() cannot be used here.
+set dotenv-path := "../.local/kubev.env"
+
+local-kubev-tooling-start:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The credentials are already in this recipe's environment via `dotenv-path` above;
+    # --env-file is what carries them on into the container.
+    env_files=()
+    if [ -f "{{ KUBEV_ENV_FILE }}" ]; then
+        env_files+=(--env-file "{{ KUBEV_ENV_FILE }}")
+    else
+        echo "[local-kubev-tooling-start] {{ KUBEV_ENV_FILE }} not found - KubeV credentials not loaded"
+    fi
+    docker pull --platform linux/amd64 {{ DOCKER_REPO }}:{{ TOOLING_CONTAINER_TAG }}
+    docker run -it --platform linux/amd64 --user 0 --rm \
+        --name {{ CONTAINER_NAME }} {{ DOCKER_EXTRA_FLAG }} \
+        ${env_files[@]+"${env_files[@]}"} \
+        -v {{ source_directory() }}/../../../:/data \
+        {{ DOCKER_REPO }}:{{ TOOLING_CONTAINER_TAG }} bash
+    just local-kubev-tooling-exec
+
+local-kubev-tooling-rm:
+    docker rm -f {{ CONTAINER_NAME }}
+
+local-kubev-tooling-exec:
+    docker exec -w /data -it {{ CONTAINER_NAME }} bash
+
+# Shared deployment SSH private key (../.local/id_rsa), loaded into the agent by `env-prepare`.
+# Resolves relative to this file's location, so every importer points to the same key.
+ssh_key := join(source_directory(), "../.local/id_rsa")
+
+# Ensure an ssh-agent is reachable (start one on the fly if not) and load the deployment SSH key.
+env-prepare:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Check on the fly whether an ssh-agent is reachable; rc=2 means none is running.
+    rc=0; ssh-add -l >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 2 ]; then
+        echo "[env-prepare] no ssh-agent running — starting one on the fly"
+        eval "$(ssh-agent -s)"
+    fi
+    chmod 600 "{{ ssh_key }}"
+    ssh-add "{{ ssh_key }}"
+    ssh-add -l || true
+
+#### #### KubeV Cluster Management
+#### Terraform (K8s API LB)
+
+kubev-lb-tf-init: env-prepare
+    cd {{ KUBEV_TF_INFRA }} && terraform init
+
+kubev-lb-tf-apply: env-prepare
+    cd {{ KUBEV_TF_INFRA }} && terraform apply
+
+kubev-lb-output: env-prepare
+    cd {{ KUBEV_TF_INFRA }} && terraform output
+
+kubev-apply:
+    kubermatic-virtualization version > {{ KUBEV_FOLDER }}/kubermatic-virtualization.version.txt
+    kubermatic-virtualization apply --verbose -f {{ KUBEV_FOLDER }}/kubev.yaml
+    cp ./*-kubeconfig {{ KUBEV_KUBECONFIG }}
+    just untaint-cp-nodes
+    just kubev-apply-services
+    just kubev-expose-dashboard
+
+kubev-apply-services:
+	cd {{ KUBEV_FOLDER }} && KUBECONFIG={{ KUBEV_KUBECONFIG }} helmfile sync
+
+#### Kubernetes Helpers
+untaint-cp-nodes:
+	kubectl --kubeconfig {{ KUBEV_KUBECONFIG }} taint nodes --all node-role.kubernetes.io/master- || echo "... untainted"
+	kubectl --kubeconfig {{ KUBEV_KUBECONFIG }} taint nodes --all node-role.kubernetes.io/control-plane- || echo "... untainted"
+
+# Companion to `untaint-cp-nodes`: kubeadm labels every control-plane node
+# `node.kubernetes.io/exclude-from-external-load-balancers`, and MetalLB honours
+# it - the speaker logs
+#   "skipping should announce l2" ... reason: "speaker's node has labeled
+#    'node.kubernetes.io/exclude-from-external-load-balancers'"  ->  "no available nodes"
+# so the VIP gets allocated by metallb-controller but is never ARPed, and the
+# LoadBalancer just hangs (EXTERNAL-IP set, `arp -n <vip>` stays "incomplete").
+# On this box the control plane IS the only worker, so the label has to go the
+# same way the taints do above. Removing the taints alone is not enough.
+allow-cp-node-lb:
+	kubectl --kubeconfig {{ KUBEV_KUBECONFIG }} label nodes --all node.kubernetes.io/exclude-from-external-load-balancers- || echo "... already allowed"
+
+# Extra type=LoadBalancer Service for the dashboard, announced over ARP by
+# MetalLB out of loadBalancer.metallb.ipRange in kubev.yaml. The Helm-managed
+# svc/kubev-dashboard stays ClusterIP and is not touched. Full packet path and
+# the reason this is a second Service: header of kubev/dashboard-svc-lb.yaml.
+kubev-expose-dashboard: allow-cp-node-lb
+	kubectl --kubeconfig {{ KUBEV_KUBECONFIG }} apply -f {{ KUBEV_FOLDER }}/dashboard-svc-lb.yaml
+	kubectl --kubeconfig {{ KUBEV_KUBECONFIG }} -n kubermatic-virtualization get svc kubev-dashboard-lb -o wide
+
+# Prove the VIP is really being announced (not just allocated): a node under
+# `nodeAssigned` plus a non-empty metallb_speaker_announced is the pair that
+# distinguishes "MetalLB works" from "MetalLB assigned an IP nobody answers".
+kubev-lb-status:
+	kubectl --kubeconfig {{ KUBEV_KUBECONFIG }} -n kubermatic-virtualization get svc -o wide
+	kubectl --kubeconfig {{ KUBEV_KUBECONFIG }} get servicel2statuses.metallb.io -A -o 'custom-columns=SERVICE:.metadata.labels.metallb\.io/service-name,NODE:.status.node'
+	kubectl --kubeconfig {{ KUBEV_KUBECONFIG }} -n kubermatic-virtualization get events --field-selector reason=nodeAssigned -o custom-columns=OBJ:.involvedObject.name,MSG:.message

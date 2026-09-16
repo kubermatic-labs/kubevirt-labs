@@ -1,0 +1,101 @@
+---
+# Additional LoadBalancer for the KubeV dashboard (UI).
+#
+# The KubeV installer renders `svc/kubev-dashboard` as ClusterIP and the config
+# schema (`kubermatic-virtualization config print --full`) has no knob for the
+# dashboard Service type - only `dashboard.enabled`, `dashboard.dashboardURL`
+# and `dashboard.auth`. So this is a SECOND, standalone Service next to the
+# Helm-managed one: same pod selector, nothing about the release is touched, and
+# `kubermatic-virtualization apply` leaves it alone (it is not part of any chart).
+#
+# Announcement is ARP (MetalLB L2), not BGP:
+#
+#   kubev.yaml -> loadBalancer.metallb.ipRange: 10.77.33.20-10.77.33.50
+#     -> ipaddresspool.metallb.io/ippool-kubev     (the pool)
+#     -> l2advertisement.metallb.io/l2adv-kubev    (gratuitous ARP / NDP)
+#
+# The k8c-edge MikroTik is a plain L2 gateway for 10.77.33.0/24 (bridge
+# 10.77.33.1/24) and the node sits in that same broadcast domain, so ARP is
+# both sufficient and the simpler path - no router-side config at all. The
+# routed alternative is prepared but NOT applied: kubev/metallb-bgp/ peers the
+# speaker with the Chateau (AS 64513 <-> 64512) for the separate 10.77.34.0/24
+# pool, router half via `just bgp-apply` in ../edge-network. That pool is
+# autoAssign: false, so it cannot steal this Service's address; a Service opts
+# in with `metallb.io/address-pool: bgp-pool`. BGP only buys reachability from
+# *other* subnets - it would change nothing for clients already on this LAN.
+#
+# Path a packet takes:
+#
+#   http://10.77.33.20/               <- MetalLB VIP, ARP-announced by
+#                                        metallb-speaker on kubev-host-01
+#     -> node 10.77.33.196, kube-proxy DNAT
+#     -> pod kubev-dashboard:8080     <- nginx, serves the SPA and proxies
+#                                        /api/ + /auth/ to kubev-api-server
+#
+# One origin is enough: the dashboard's nginx (cm/kubev-dashboard-nginx-default-conf
+# plus cm/kubev-dashboard-api-server-location) fronts the API server on the very
+# same port, so kubev-api-server must NOT be exposed separately.
+#
+# PREREQUISITE, and the one thing that actually bit here: MetalLB refuses to
+# announce from a node carrying kubeadm's
+# `node.kubernetes.io/exclude-from-external-load-balancers` label. The KubeV
+# installer untaints the control plane so workloads can run on this single box
+# (`just untaint-cp-nodes`) but leaves that label in place, so the speaker logs
+#   "skipping should announce l2" ... "no available nodes"
+# and the VIP is allocated but never ARPed - EXTERNAL-IP looks right while
+# `arp -n 10.77.33.20` stays "incomplete" and every connection just times out.
+# `just allow-cp-node-lb` removes it; `just kubev-expose-dashboard` depends on
+# that recipe, so applying this file the documented way cannot miss it.
+#
+# Login is basic auth, enforced by the API server (`auth.mode: basic`,
+# secret kubermatic-virtualization/kubev-basic-auth, 24h session cookie with
+# cookieSecure: false -> plain HTTP is fine). Credentials are in
+# ../kubev-basic-auth-credentials. NOTE: this VIP puts the UI on the whole edge
+# LAN with no TLS - that is deliberate for the lab, but it is basic auth over
+# cleartext, so keep the LAN trusted.
+#
+# Apply with:
+#   just kubev-expose-dashboard
+# or:
+#   kubectl --kubeconfig kubev/kubev-kubeconfig.crypt.yaml apply -f kubev/dashboard-svc-lb.yaml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubev-dashboard-lb
+  namespace: kubermatic-virtualization
+  labels:
+    app.kubernetes.io/name: kubev-dashboard
+    app.kubernetes.io/instance: kubev-dashboard
+    # Marks this object as hand-maintained, so it is obvious it is NOT part of
+    # the kubev-dashboard Helm release (which owns svc/kubev-dashboard).
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    # PINNED so the URL never moves: first address of ippool-kubev. The pool
+    # (10.77.33.20-.50) sits below the router's DHCP range
+    # (10.77.33.100-.199), so nothing else on the LAN can hand this out.
+    metallb.io/loadBalancerIPs: 10.77.33.20
+    # Explicit pool - harmless today (there is only one) but keeps the binding
+    # stable if a second pool is ever added with autoAssign.
+    metallb.io/address-pool: ippool-kubev
+spec:
+  type: LoadBalancer
+  # Same pods the Helm-managed ClusterIP Service selects.
+  selector:
+    app.kubernetes.io/instance: kubev-dashboard
+    app.kubernetes.io/name: kubev-dashboard
+  # Real client IPs in the nginx access log. Safe here: MetalLB only ARPs for
+  # the VIP from nodes that actually run a ready dashboard pod, and this is a
+  # single-node cluster - if the pod ever moves, the announcement follows it.
+  externalTrafficPolicy: Local
+  ports:
+    # Plain http, so the UI is just http://10.77.33.20/
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+    # Same port as in-cluster, so a pasted http://...:8080 URL also works.
+    - name: http-alt
+      port: 8080
+      targetPort: http
+      protocol: TCP
