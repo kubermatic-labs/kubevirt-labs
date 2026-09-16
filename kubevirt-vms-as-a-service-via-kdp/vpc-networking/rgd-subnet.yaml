@@ -2,11 +2,8 @@
 apiVersion: kro.run/v1alpha1
 kind: ResourceGraphDefinition
 metadata:
-  # The name of the CRD will be 'compositevms.composition.kubevirt.io'
-  # The API group will be 'composition.kubevirt.io'
   name: subnets.kubev.k8c.io
 spec:
-  # 1. Define the schema for the new CompositeVM CRD
   schema:
     apiVersion: v1alpha1
     kind: Subnet
@@ -21,46 +18,63 @@ spec:
       egressGateway: boolean | default=true description="Create a VpcEgressGateway so VMs on this subnet can reach the internet. Without it a custom VPC has no outbound path at all."
       egressExternalSubnet: string | default="vpc-egress-external" description="Provider-backed subnet in the default VPC that the egress gateway attaches to. Cluster prerequisite, see service-cluster/vpc-egress-external.yaml."
     status:
-      v4availableIPrange: ${subnet.status.v4availableIPrange}
+      # realName is the kube-OVN Subnet the wrapper creates, always
+      # "<namespace>-<name>-sn". It doubles as the NetworkAttachmentDefinition name that
+      # VMs attach to through multus, so both VM kinds read it.
+      realName: ${subnet.status.realName}
+      vpcRealName: ${subnet.status.vpcRealName}
+      phase: ${subnet.status.phase}
+      availableIPs: ${subnet.status.availableIPs}
       egressGatewayReady: ${egressgw.status.ready}
       egressGatewayExternalIP: ${egressgw.status.externalIPs[0]}
     additionalPrinterColumns:
       - jsonPath: .metadata.creationTimestamp
         name: Age
         type: date
+      - jsonPath: .status.phase
+        name: Phase
+        type: string
       - jsonPath: .spec.cidr
         name: CIDR
         type: string
       - jsonPath: .spec.vpc
         name: VPC
         type: string
-      - jsonPath: .status.v4availableIPrange
-        name: Available
-        type: string
+      - jsonPath: .status.availableIPs
+        name: Free IPs
+        type: integer
       - jsonPath: .status.egressGatewayExternalIP
         name: Egress IP
         type: string
 
   resources:
-    # This resource creates the KubeVirt VirtualMachine
+    # The namespaced wrapper, same reasoning as rgd-vpc.yaml. The wrapper also
+    # provisions a NetworkAttachmentDefinition named after status.realName and gives the
+    # kube-OVN Subnet a matching provider, which is how VMs attach via multus.
     - id: subnet
       template:
-        apiVersion: kubeovn.io/v1
+        apiVersion: virtualization.k8c.io/v1alpha1
         kind: Subnet
         metadata:
           name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
         spec:
           cidrBlock: ${schema.spec.cidr}
-          vpc: kdp-${schema.metadata.labels['syncagent.kcp.io/remote-object-cluster']}-${schema.spec.vpc}
+          # vpcRef is the wrapper VPC's own name in this namespace, not the kube-OVN name.
+          vpcRef: kdp-${schema.metadata.labels['syncagent.kcp.io/remote-object-cluster']}-${schema.spec.vpc}
           natOutgoing: ${schema.spec.natOutgoing}
           protocol: IPv4
           gatewayType: distributed
 
     # A custom kube-OVN VPC has no outbound path of its own - `natOutgoing` only applies
-    # to the default VPC, and Vpc.spec.enableExternal needs external gateway nodes that
-    # are not configured on this cluster. The VpcEgressGateway is a small Deployment with
-    # one NIC in this subnet and one in a provider-backed subnet of the default VPC; it
+    # to the default VPC, and enableExternal needs external gateway nodes that are not
+    # configured on this cluster. The VpcEgressGateway is a small Deployment with one NIC
+    # in this subnet and one in a provider-backed subnet of the default VPC; it
     # MASQUERADEs on the way out. One per subnet, so each tenant gets its own.
+    #
+    # The wrapper API has no field for this, so it stays a raw kubeovn.io object. It
+    # therefore needs the kube-OVN names, which it reads back off the wrapper's status -
+    # that also makes it wait until the wrapper has actually created the subnet.
     - id: egressgw
       includeWhen:
         - ${schema.spec.egressGateway}
@@ -71,13 +85,13 @@ spec:
           name: ${schema.metadata.name}
           namespace: ${schema.metadata.namespace}
         spec:
-          vpc: kdp-${schema.metadata.labels['syncagent.kcp.io/remote-object-cluster']}-${schema.spec.vpc}
+          vpc: ${subnet.status.vpcRealName}
           # internalSubnet is required here: the tenant VPC has no default subnet, and
           # without it the gateway fails with "default subnet of vpc ... not found".
-          internalSubnet: ${schema.metadata.name}
+          internalSubnet: ${subnet.status.realName}
           externalSubnet: ${schema.spec.egressExternalSubnet}
           replicas: 1
           policies:
             - snat: true
               subnets:
-                - ${schema.metadata.name}
+                - ${subnet.status.realName}

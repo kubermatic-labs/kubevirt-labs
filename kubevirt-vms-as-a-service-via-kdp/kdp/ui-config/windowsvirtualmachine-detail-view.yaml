@@ -1,0 +1,649 @@
+# Exported from the KDP UI builder with `just kdp-ui-export`, applied with `just kdp-ui`.
+# The ui-generator-schema-hash annotation is load-bearing: the dashboard compares it
+# against the live CRD schema and silently falls back to the default schema-derived
+# view when it does not match. Re-export after any RGD schema change.
+---
+apiVersion: "v1"
+kind: "ConfigMap"
+metadata:
+  name: "ui-config-kubev.k8c.io-v1alpha1-windowsvirtualmachine-detail-view"
+  namespace: "default"
+  labels:
+    internal.kdp.k8c.io/visibility: "hidden"
+  annotations:
+    internal.kdp.k8c.io/ui-generator-schema-hash: "cc10d9b49b5a05113fdb389dba7de7bd90f812fe57fff2ca46997c7209593576"
+    internal.kdp.k8c.io/ui-generator-version: "1.0"
+data:
+  data.json: |-
+    {
+      "root": "page",
+      "elements": {
+        "page": {
+          "type": "Stack",
+          "props": {
+            "direction": "column",
+            "gap": "lg",
+            "align": "stretch"
+          },
+          "children": [
+            "header",
+            "top-status",
+            "vm-section",
+            "net-section",
+            "status-section",
+            "conditions-section",
+            "related-section",
+            "raw-section"
+          ]
+        },
+        "header": {
+          "type": "FormSection",
+          "props": {
+            "title": "WindowsVirtualMachine",
+            "description": "Detail view for kubev.k8c.io/v1alpha1 WindowsVirtualMachine.",
+            "collapsible": false,
+            "defaultExpanded": true
+          },
+          "children": [
+            "header-grid"
+          ]
+        },
+        "header-grid": {
+          "type": "Grid",
+          "props": {
+            "columns": 2,
+            "gap": "md"
+          },
+          "children": [
+            "name",
+            "namespace",
+            "api-version",
+            "kind",
+            "created"
+          ]
+        },
+        "name": {
+          "type": "DataField",
+          "props": {
+            "label": "Name",
+            "value": {
+              "$bindState": "/metadata/name"
+            },
+            "copyable": true,
+            "format": "text"
+          },
+          "children": []
+        },
+        "namespace": {
+          "type": "DataField",
+          "props": {
+            "label": "Namespace",
+            "value": {
+              "$bindState": "/metadata/namespace"
+            },
+            "copyable": true,
+            "format": "text"
+          },
+          "children": []
+        },
+        "api-version": {
+          "type": "DataField",
+          "props": {
+            "label": "APIVersion",
+            "value": {
+              "$bindState": "/apiVersion"
+            },
+            "copyable": true,
+            "format": "text"
+          },
+          "children": []
+        },
+        "kind": {
+          "type": "DataField",
+          "props": {
+            "label": "Kind",
+            "value": {
+              "$bindState": "/kind"
+            },
+            "copyable": false,
+            "format": "text"
+          },
+          "children": []
+        },
+        "created": {
+          "type": "Timestamp",
+          "props": {
+            "value": {
+              "$bindState": "/metadata/creationTimestamp"
+            },
+            "format": "both"
+          },
+          "children": []
+        },
+        "top-status": {
+          "type": "FormSection",
+          "props": {
+            "title": "Status",
+            "description": "Key health signals derived from conditions.",
+            "collapsible": false,
+            "defaultExpanded": true
+          },
+          "children": [
+            "top-status-row"
+          ]
+        },
+        "top-status-row": {
+          "type": "FormRow",
+          "props": {
+            "columns": 2,
+            "gap": "md"
+          },
+          "children": [
+            "ready-badge",
+            "synced-badge"
+          ]
+        },
+        "ready-badge": {
+          "type": "StatusBadge",
+          "props": {
+            "value": {
+              "$bindState": "/status/conditionsByType/Ready/status"
+            },
+            "successValues": [
+              "True"
+            ],
+            "errorValues": [
+              "False",
+              "Unknown"
+            ]
+          },
+          "children": []
+        },
+        "synced-badge": {
+          "type": "StatusBadge",
+          "props": {
+            "value": {
+              "$bindState": "/status/conditionsByType/Synced/status"
+            },
+            "successValues": [
+              "True"
+            ],
+            "errorValues": [
+              "False",
+              "Unknown"
+            ]
+          },
+          "children": []
+        },
+        "vm-section": {
+          "type": "FormSection",
+          "props": {
+            "title": "Virtual machine",
+            "description": "Core VM sizing and template settings.",
+            "collapsible": true,
+            "defaultExpanded": true
+          },
+          "children": [
+            "vm-row"
+          ]
+        },
+        "vm-row": {
+          "type": "FormRow",
+          "props": {
+            "columns": 3,
+            "gap": "md"
+          },
+          "children": [
+            "template-image",
+            "instance-type",
+            "disk-size"
+          ]
+        },
+        "template-image": {
+          "type": "DataField",
+          "props": {
+            "label": "Template Image Name",
+            "value": {
+              "$bindState": "/spec/templateImageName"
+            },
+            "copyable": true,
+            "format": "text"
+          },
+          "children": []
+        },
+        "instance-type": {
+          "type": "DataField",
+          "props": {
+            "label": "Instance Type",
+            "value": {
+              "$bindState": "/spec/instanceType"
+            },
+            "copyable": true,
+            "format": "text"
+          },
+          "children": []
+        },
+        "disk-size": {
+          "type": "DataField",
+          "props": {
+            "label": "Disk Size",
+            "value": {
+              "$bindState": "/spec/diskSize"
+            },
+            "copyable": true,
+            "format": "text"
+          },
+          "children": []
+        },
+        "net-section": {
+          "type": "FormSection",
+          "props": {
+            "title": "Networking and access",
+            "description": "Network attachment and RDP exposure settings.",
+            "collapsible": true,
+            "defaultExpanded": true
+          },
+          "children": [
+            "net-row"
+          ]
+        },
+        "net-row": {
+          "type": "FormRow",
+          "props": {
+            "columns": 3,
+            "gap": "md"
+          },
+          "children": [
+            "vpc",
+            "subnet",
+            "lb-class"
+          ]
+        },
+        "vpc": {
+          "type": "DataField",
+          "props": {
+            "label": "VPC",
+            "value": {
+              "$bindState": "/spec/vpc"
+            },
+            "copyable": true,
+            "format": "text"
+          },
+          "children": []
+        },
+        "subnet": {
+          "type": "DataField",
+          "props": {
+            "label": "Subnet",
+            "value": {
+              "$bindState": "/spec/subnet"
+            },
+            "copyable": true,
+            "format": "text"
+          },
+          "children": []
+        },
+        "lb-class": {
+          "type": "DataField",
+          "props": {
+            "label": "Load Balancer Class",
+            "value": {
+              "$bindState": "/spec/loadBalancerClass"
+            },
+            "copyable": true,
+            "format": "text"
+          },
+          "children": []
+        },
+        "status-section": {
+          "type": "FormSection",
+          "props": {
+            "title": "VM status details",
+            "description": "Current phase and access endpoints reported by the controller.",
+            "collapsible": true,
+            "defaultExpanded": true
+          },
+          "children": [
+            "status-grid",
+            "rdp-endpoints",
+            "lb-ip",
+            "interfaces-table"
+          ]
+        },
+        "status-grid": {
+          "type": "Grid",
+          "props": {
+            "columns": 2,
+            "gap": "md"
+          },
+          "children": [
+            "phase",
+            "state",
+            "port",
+            "node-port",
+            "migration-method",
+            "migration-transport"
+          ]
+        },
+        "phase": {
+          "type": "DataField",
+          "props": {
+            "label": "Phase",
+            "value": {
+              "$bindState": "/status/phase"
+            },
+            "copyable": false,
+            "format": "text"
+          },
+          "children": []
+        },
+        "state": {
+          "type": "DataField",
+          "props": {
+            "label": "State",
+            "value": {
+              "$bindState": "/status/state"
+            },
+            "copyable": false,
+            "format": "text"
+          },
+          "children": []
+        },
+        "port": {
+          "type": "DataField",
+          "props": {
+            "label": "Port",
+            "value": {
+              "$bindState": "/status/port"
+            },
+            "copyable": false,
+            "format": "text"
+          },
+          "children": []
+        },
+        "node-port": {
+          "type": "DataField",
+          "props": {
+            "label": "Node Port",
+            "value": {
+              "$bindState": "/status/nodePort"
+            },
+            "copyable": false,
+            "format": "text"
+          },
+          "children": []
+        },
+        "migration-method": {
+          "type": "DataField",
+          "props": {
+            "label": "Migration Method",
+            "value": {
+              "$bindState": "/status/migrationMethod"
+            },
+            "copyable": false,
+            "format": "text"
+          },
+          "children": []
+        },
+        "migration-transport": {
+          "type": "DataField",
+          "props": {
+            "label": "Migration Transport",
+            "value": {
+              "$bindState": "/status/migrationTransport"
+            },
+            "copyable": false,
+            "format": "text"
+          },
+          "children": []
+        },
+        "rdp-endpoints": {
+          "type": "CodeBlock",
+          "props": {
+            "title": "RDP endpoint (computed from LoadBalancer IP / NodePort / Port)",
+            "content": {
+              "$bindState": "/status/rdpEndpoint"
+            },
+            "language": "text",
+            "maxHeight": "160px"
+          },
+          "children": []
+        },
+        "lb-ip": {
+          "type": "DataField",
+          "props": {
+            "label": "Load Balancer IP",
+            "value": {
+              "$bindState": "/status/loadBalancerIP"
+            },
+            "copyable": true,
+            "format": "text"
+          },
+          "children": []
+        },
+        "interfaces-table": {
+          "type": "DataTable",
+          "props": {
+            "data": {
+              "$bindState": "/status/interfaces"
+            },
+            "columns": [
+              {
+                "key": "name",
+                "label": "Name"
+              },
+              {
+                "key": "interfaceName",
+                "label": "Interface Name"
+              },
+              {
+                "key": "podInterfaceName",
+                "label": "Pod Interface Name"
+              },
+              {
+                "key": "mac",
+                "label": "MAC"
+              },
+              {
+                "key": "ipAddress",
+                "label": "IP Address"
+              },
+              {
+                "key": "linkState",
+                "label": "Link State"
+              },
+              {
+                "key": "infoSource",
+                "label": "Info Source"
+              },
+              {
+                "key": "queueCount",
+                "label": "Queue Count"
+              }
+            ],
+            "emptyMessage": "No interfaces reported."
+          },
+          "children": []
+        },
+        "conditions-section": {
+          "type": "FormSection",
+          "props": {
+            "title": "Conditions",
+            "description": "Controller-reported conditions for this WindowsVirtualMachine.",
+            "collapsible": true,
+            "defaultExpanded": true
+          },
+          "children": [
+            "conditions-table"
+          ]
+        },
+        "conditions-table": {
+          "type": "ConditionsTable",
+          "props": {
+            "conditions": {
+              "$bindState": "/status/conditions"
+            },
+            "emptyMessage": "No conditions reported."
+          },
+          "children": []
+        },
+        "related-section": {
+          "type": "FormSection",
+          "props": {
+            "title": "Related Resources",
+            "description": "Resources associated with this VM.",
+            "collapsible": true,
+            "defaultExpanded": true
+          },
+          "children": [
+            "related-table"
+          ]
+        },
+        "related-table": {
+          "type": "DataTable",
+          "props": {
+            "data": {
+              "$bindState": "/relatedResources"
+            },
+            "columns": [
+              {
+                "key": "name",
+                "label": "Name"
+              },
+              {
+                "key": "kind",
+                "label": "Kind"
+              },
+              {
+                "key": "apiVersion",
+                "label": "API Version"
+              },
+              {
+                "key": "namespace",
+                "label": "Namespace"
+              }
+            ],
+            "emptyMessage": "No related resources."
+          },
+          "children": []
+        },
+        "raw-section": {
+          "type": "FormSection",
+          "props": {
+            "title": "Raw resource (selected fields)",
+            "description": "Helpful for troubleshooting when fields are unset or controller data is partial.",
+            "collapsible": true,
+            "defaultExpanded": false
+          },
+          "children": [
+            "raw-spec",
+            "raw-status"
+          ]
+        },
+        "raw-spec": {
+          "type": "CodeBlock",
+          "props": {
+            "title": "/spec",
+            "content": {
+              "$bindState": "/spec"
+            },
+            "language": "yaml",
+            "maxHeight": "260px"
+          },
+          "children": []
+        },
+        "raw-status": {
+          "type": "CodeBlock",
+          "props": {
+            "title": "/status",
+            "content": {
+              "$bindState": "/status"
+            },
+            "language": "yaml",
+            "maxHeight": "260px"
+          },
+          "children": []
+        }
+      },
+      "state": {
+        "apiVersion": "kubev.k8c.io/v1alpha1",
+        "kind": "WindowsVirtualMachine",
+        "metadata": {
+          "name": "winvm-sample",
+          "namespace": "default",
+          "creationTimestamp": "2026-08-18T09:12:34Z",
+          "labels": {
+            "app": "windows-vm"
+          },
+          "annotations": {
+            "kubermatic.io/owner": "platform-team"
+          }
+        },
+        "status": {
+          "conditionsByType": {
+            "Ready": {
+              "status": ""
+            },
+            "Synced": {
+              "status": ""
+            }
+          },
+          "phase": "",
+          "state": "",
+          "port": null,
+          "nodePort": null,
+          "migrationMethod": "",
+          "migrationTransport": "",
+          "loadBalancerIP": "",
+          "rdpEndpoint": "",
+          "interfaces": [],
+          "conditions": [
+            {
+              "type": "Ready",
+              "status": "",
+              "reason": "",
+              "message": "",
+              "lastTransitionTime": "2026-08-18T09:12:34Z",
+              "observedGeneration": 1
+            },
+            {
+              "type": "Synced",
+              "status": "",
+              "reason": "",
+              "message": "",
+              "lastTransitionTime": "2026-08-18T09:12:34Z",
+              "observedGeneration": 1
+            }
+          ]
+        },
+        "spec": {
+          "templateImageName": "",
+          "instanceType": "",
+          "diskSize": "",
+          "vpc": "",
+          "subnet": "",
+          "loadBalancerClass": ""
+        },
+        "relatedResources": [
+          {
+            "name": "winvm-sample",
+            "kind": "Service",
+            "apiVersion": "v1",
+            "namespace": "default"
+          },
+          {
+            "name": "winvm-sample",
+            "kind": "VirtualMachineInstance",
+            "apiVersion": "kubevirt.io/v1",
+            "namespace": "default"
+          },
+          {
+            "name": "winvm-sample",
+            "kind": "PersistentVolumeClaim",
+            "apiVersion": "v1",
+            "namespace": "kubermatic-virtualization"
+          }
+        ]
+      }
+    }
+  prompts: "[\"Create a detail view for WindowsVirtualMachine. Show the Ready and Synced conditions prominently at the top as status badges. Then a \\\"Virtual machine\\\" section with templateImageName, instanceType and diskSize, and a \\\"Networking and access\\\" section with vpc, subnet and loadBalancerClass. Also surface the status fields that exist in the schema, such as the VM phase and any assigned IP or RDP endpoint. Use the schema titles and descriptions as labels. Do not invent any example VPC, subnet, image or address values.\"]"

@@ -1,0 +1,25 @@
+# Exported from the KDP UI builder with `just kdp-ui-export`, applied with `just kdp-ui`.
+# The ui-generator-schema-hash annotation is load-bearing: the dashboard compares it
+# against the live CRD schema and silently falls back to the default schema-derived
+# view when it does not match. Re-export after any RGD schema change.
+---
+apiVersion: "v1"
+kind: "ConfigMap"
+metadata:
+  name: "ui-config-kubev.k8c.io-v1alpha1-windowsvirtualmachine-list-view"
+  namespace: "default"
+  labels:
+    internal.kdp.k8c.io/visibility: "hidden"
+  annotations:
+    internal.kdp.k8c.io/ui-generator-schema-hash: "cc10d9b49b5a05113fdb389dba7de7bd90f812fe57fff2ca46997c7209593576"
+    internal.kdp.k8c.io/ui-generator-version: "1.0"
+data:
+  data.json: |-
+    [
+      "status.conditions.Ready",
+      "spec.instanceType",
+      "spec.subnet",
+      "spec.templateImageName",
+      "spec.vpc"
+    ]
+  prompts: "[]"

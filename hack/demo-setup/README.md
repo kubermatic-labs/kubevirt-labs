@@ -154,6 +154,80 @@ is immutable, so opting an existing Service in means recreating it.
 one layer down - a VM in its own kube-ovn VPC is unreachable over `nodeIP:nodePort`, so this
 only works for VMs on `ovn-default`. Details in `kubelb-ccm/README.md`.
 
+## TODO: workers hit DiskPressure and take the KDP control plane with them
+
+> **Open, environment-specific - not a product bug.** First seen 2026-09-03 on
+> `kubev-demo-env-wk-2`; recurred since (`DiskPressure` last cleared on wk-1 2026-09-11,
+> on wk-2 2026-09-13). Quiet as of 2026-09-16. Nothing applied yet.
+>
+> The fix belongs in `kubermatic/demo-envs`, which we only have read access to. Filed there as
+> [kubermatic/demo-envs#250](https://github.com/kubermatic/demo-envs/issues/250); local copy in
+> [`issues/kubev-longhorn-storage-stability.md`](issues/kubev-longhorn-storage-stability.md).
+
+When a worker crosses the kubelet eviction threshold the damage is not contained to whatever
+filled the disk. The 2026-09-03 episode evicted `kube-multus-ds`, restarted the `kubev-*`
+control-plane pods, and took the KDP-managed kube-ovn objects with them: both tenant VPCs,
+their subnets and both `VpcEgressGateway`s were gone, KDP VMs were shut down, and
+`win10-demo` was left paused on `IOerror ... volume: rootdisk`. The objects exist again
+(recreated 2026-09-04), but a demo running at that moment is simply lost.
+
+**Why a full Longhorn evicts unrelated pods.** `/var/lib/longhorn` sits on the *same
+filesystem* as kubelet's ephemeral-storage, so Longhorn filling up is indistinguishable from
+the node filling up and kubelet starts evicting by QoS and priority. That is how one VM disk
+ends up killing multus and the KDP control plane.
+
+**The fill-up itself is structural over-subscription, not a leak.** Longhorn is deliberately
+over-provisioned - it was raised on 2026-08-04 to stop the 3-replica default from deadlocking
+CDI imports on a 2-node cluster - and that same setting lets sparse volumes grow past what the
+disks hold:
+
+| Setting                                 | Value |
+| --------------------------------------- | ----- |
+| `storage-over-provisioning-percentage`  | 200   |
+| `default-replica-count`                 | 3     |
+| `replica-soft-anti-affinity`            | true  |
+| `storage-minimal-available-percentage`  | 25    |
+| kubelet `evictionHard nodefs.available` | 10%   |
+
+3 replicas with soft anti-affinity on 2 workers means two replicas share a node, so 290G of
+provisioned volumes already schedules 560G onto wk-1's 468G disk:
+
+| Node | nodefs capacity | Longhorn scheduled | Actually used 2026-09-16 |
+| ---- | --------------- | ------------------ | ------------------------ |
+| wk-1 | 468.0G          | 560.1G (120%)      | 238.5G (51.0%)           |
+| wk-2 | 468.0G          | 311.4G (67%)       | 180.0G (38.5%)           |
+
+Longhorn stops scheduling *new* replicas at 25% free, but nothing stops *existing* sparse
+volumes from filling the gap between there and kubelet's 10% hard eviction. That window is
+the whole problem.
+
+**The replica count is pinned in three places.** Changing only the global setting does nothing
+for VM disks, because they all come from the `kubev-vms` StorageClass:
+
+| Where                     | Field                         | Value       |
+| ------------------------- | ----------------------------- | ----------- |
+| global Longhorn setting   | `default-replica-count`       | 3           |
+| `kubev-vms` StorageClass  | `parameters.numberOfReplicas` | 3           |
+| existing volumes          | `spec.numberOfReplicas`       | 3 (all 9)   |
+
+**Options, none chosen yet:**
+
+- **Set replicas to 2 in all three places above.** On 2 nodes, 2 copies is strictly better
+  than 3 copies for both availability and space - 3 copies just means two pile onto one node.
+  Frees roughly a third of the scheduled capacity.
+- **Give Longhorn its own filesystem** so it can never trigger kubelet eviction of unrelated
+  pods. This fixes the blast radius rather than the fill rate, and is what stops a storage
+  problem from deleting tenant VPCs.
+- Add a third worker - removes the anti-affinity packing, and is the only option that also
+  addresses the CDI-import deadlock the over-provisioning was working around.
+- Raise `storage-minimal-available-percentage` clear of the kubelet threshold (35-40%) so
+  Longhorn stops scheduling well before kubelet starts evicting.
+
+Related: a host-assisted CDI clone needs **2x** the disk (a `tmp-pvc-<uid>` populator PVC
+*plus* the target), so a 50G clone wants 100G nominal = 300G scheduled at 3 replicas. Those
+orphaned `tmp-pvc-<uid>` PVCs have no ownerReferences and are never garbage-collected - check
+for them first when space disappears.
+
 ## Manual, NOT provisioned
 
 Both survive only until the next `just recreate`.

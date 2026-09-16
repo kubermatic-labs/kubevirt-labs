@@ -70,7 +70,7 @@ spec:
     # created on this cluster. Both are cluster-scoped, so they must not set
     # metadata.namespace - kro refuses to build the RGD otherwise.
     #
-    # The VM's logical_router / logical_switch annotations below reference these two ids,
+    # The VM's multus networkName below references tenantSubnet.status.realName,
     # and that reference is what makes kro draw a DAG edge. Until both resolve, the VM
     # node produces no resource and is never created: the instance reports IN_PROGRESS
     # rather than erroring, and prune stays disabled while anything is unresolved, so an
@@ -80,21 +80,23 @@ spec:
     # attach to another tenant's network by guessing its name.
     - id: tenantVpc
       externalRef:
-        apiVersion: kubeovn.io/v1
-        kind: Vpc
+        apiVersion: virtualization.k8c.io/v1alpha1
+        kind: VPC
         metadata:
           name: kdp-${schema.metadata.labels['syncagent.kcp.io/remote-object-cluster']}-${schema.spec.vpc}
+          namespace: ${schema.metadata.namespace}
 
     - id: tenantSubnet
       externalRef:
-        apiVersion: kubeovn.io/v1
+        apiVersion: virtualization.k8c.io/v1alpha1
         kind: Subnet
         metadata:
           name: kdp-${schema.metadata.labels['syncagent.kcp.io/remote-object-cluster']}-${schema.spec.subnet}
+          namespace: ${schema.metadata.namespace}
       # Existence alone already gates dependents. This additionally waits for kube-OVN to
       # allocate the address range. A readyWhen expression may only reference its own node.
       readyWhen:
-        - ${tenantSubnet.status.v4availableIPrange != ""}
+        - ${tenantSubnet.status.realName != ""}
     # SSH reachability, mirroring the Windows kind's RDP Service. The selector matches
     # the label the VM puts on its virt-launcher pod, so it works for both OS branches.
     - id: svc
@@ -162,8 +164,6 @@ spec:
               labels:
                 kubevirt.io/vm: ${schema.metadata.name}
               annotations:
-                ovn.kubernetes.io/logical_router: ${tenantVpc.metadata.name}
-                ovn.kubernetes.io/logical_switch: ${tenantSubnet.metadata.name}
                 kubevirt.io/allow-pod-bridge-network-live-migration: "true"
             spec:
               domain:
@@ -193,8 +193,15 @@ spec:
                 - 8.8.8.8
               evictionStrategy: External
               networks:
+              # Attached through multus, not the pod network. The wrapper Subnet
+              # provisions a NetworkAttachmentDefinition named after status.realName and
+              # gives the kube-OVN Subnet a matching provider; without that pairing
+              # kube-ovn cannot allocate an IP. This reference is also the DAG edge that
+              # blocks the VM until the Subnet actually exists.
               - name: default
-                pod: {}
+                multus:
+                  default: true
+                  networkName: ${schema.metadata.namespace}/${tenantSubnet.status.realName}
               terminationGracePeriodSeconds: 30
               volumes:
               - dataVolume:
@@ -272,8 +279,6 @@ spec:
               labels:
                 kubevirt.io/vm: ${schema.metadata.name}
               annotations:
-                ovn.kubernetes.io/logical_router: ${tenantVpc.metadata.name}
-                ovn.kubernetes.io/logical_switch: ${tenantSubnet.metadata.name}
                 kubevirt.io/allow-pod-bridge-network-live-migration: "true"
             spec:
               domain:
@@ -303,8 +308,15 @@ spec:
                 - 8.8.8.8
               evictionStrategy: External
               networks:
+              # Attached through multus, not the pod network. The wrapper Subnet
+              # provisions a NetworkAttachmentDefinition named after status.realName and
+              # gives the kube-OVN Subnet a matching provider; without that pairing
+              # kube-ovn cannot allocate an IP. This reference is also the DAG edge that
+              # blocks the VM until the Subnet actually exists.
               - name: default
-                pod: {}
+                multus:
+                  default: true
+                  networkName: ${schema.metadata.namespace}/${tenantSubnet.status.realName}
               terminationGracePeriodSeconds: 30
               volumes:
               - dataVolume:

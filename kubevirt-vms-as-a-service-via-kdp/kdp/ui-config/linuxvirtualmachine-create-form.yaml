@@ -1,0 +1,348 @@
+# Exported from the KDP UI builder with `just kdp-ui-export`, applied with `just kdp-ui`.
+# The ui-generator-schema-hash annotation is load-bearing: the dashboard compares it
+# against the live CRD schema and silently falls back to the default schema-derived
+# view when it does not match. Re-export after any RGD schema change.
+---
+apiVersion: "v1"
+kind: "ConfigMap"
+metadata:
+  name: "ui-config-kubev.k8c.io-v1alpha1-linuxvirtualmachine-create-form"
+  namespace: "default"
+  labels:
+    internal.kdp.k8c.io/visibility: "hidden"
+  annotations:
+    internal.kdp.k8c.io/ui-generator-schema-hash: "8b9f7aeccecc94927626b90cb157258a1c522cbb1864007e64ffb7ad2f2d2036"
+    internal.kdp.k8c.io/ui-generator-version: "1.0"
+data:
+  data.json: |-
+    {
+      "root": "main",
+      "elements": {
+        "main": {
+          "type": "Stack",
+          "props": {
+            "direction": "column",
+            "gap": "lg",
+            "align": "stretch"
+          },
+          "children": [
+            "title",
+            "vm-section",
+            "net-section"
+          ]
+        },
+        "title": {
+          "type": "Heading",
+          "props": {
+            "content": "LinuxVirtualMachine",
+            "level": "h2"
+          },
+          "children": []
+        },
+        "vm-section": {
+          "type": "FormSection",
+          "props": {
+            "title": "Virtual machine",
+            "description": "Define the guest OS, image, sizing, and root disk.",
+            "collapsible": true,
+            "defaultExpanded": true
+          },
+          "children": [
+            "vm-grid"
+          ]
+        },
+        "vm-grid": {
+          "type": "Grid",
+          "props": {
+            "columns": 2,
+            "gap": "md"
+          },
+          "children": [
+            "os",
+            "image",
+            "instanceType",
+            "diskSize"
+          ]
+        },
+        "os": {
+          "type": "SelectField",
+          "props": {
+            "label": "OS",
+            "disabled": false,
+            "placeholder": "Select OS",
+            "options": [
+              {
+                "value": "ubuntu",
+                "label": "Ubuntu"
+              },
+              {
+                "value": "flatcar",
+                "label": "Flatcar"
+              }
+            ],
+            "value": {
+              "$bindState": "/spec/os"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "OS is required"
+              }
+            ],
+            "validateOn": "blur"
+          },
+          "children": []
+        },
+        "image": {
+          "type": "SelectField",
+          "props": {
+            "label": "Image",
+            "disabled": false,
+            "placeholder": "Select image",
+            "options": [
+              {
+                "value": "quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64",
+                "label": "quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64"
+              },
+              {
+                "value": "quay.io/kubermatic-virt-disks/ubuntu:22.04",
+                "label": "quay.io/kubermatic-virt-disks/ubuntu:22.04"
+              },
+              {
+                "value": "quay.io/kubermatic-virt-disks/flatcar:4593.2.3-amd64",
+                "label": "quay.io/kubermatic-virt-disks/flatcar:4593.2.3-amd64"
+              }
+            ],
+            "value": {
+              "$bindState": "/spec/image"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "Image is required"
+              }
+            ],
+            "validateOn": "blur"
+          },
+          "children": []
+        },
+        "instanceType": {
+          "type": "SelectField",
+          "props": {
+            "label": "Instance Type",
+            "disabled": false,
+            "placeholder": "Select instance type",
+            "options": [
+              {
+                "value": "u1.nano",
+                "label": "u1.nano"
+              },
+              {
+                "value": "u1.micro",
+                "label": "u1.micro"
+              },
+              {
+                "value": "u1.small",
+                "label": "u1.small"
+              },
+              {
+                "value": "u1.medium",
+                "label": "u1.medium"
+              },
+              {
+                "value": "u1.2xmedium",
+                "label": "u1.2xmedium"
+              },
+              {
+                "value": "u1.large",
+                "label": "u1.large"
+              },
+              {
+                "value": "u1.xlarge",
+                "label": "u1.xlarge"
+              },
+              {
+                "value": "u1.2xlarge",
+                "label": "u1.2xlarge"
+              },
+              {
+                "value": "u1.4xlarge",
+                "label": "u1.4xlarge"
+              },
+              {
+                "value": "u1.8xlarge",
+                "label": "u1.8xlarge"
+              }
+            ],
+            "value": {
+              "$bindState": "/spec/instanceType"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "Instance Type is required"
+              }
+            ],
+            "validateOn": "blur"
+          },
+          "children": []
+        },
+        "diskSize": {
+          "type": "TextField",
+          "props": {
+            "label": "Disk Size",
+            "disabled": false,
+            "placeholder": "e.g. 20Gi",
+            "value": {
+              "$bindState": "/spec/diskSize"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "Disk Size is required"
+              },
+              {
+                "type": "pattern",
+                "message": "Use a size like 20Gi or 50Gi",
+                "args": {
+                  "pattern": "^[0-9]+Gi$"
+                }
+              }
+            ],
+            "validateOn": "blur",
+            "type": "text"
+          },
+          "children": []
+        },
+        "net-section": {
+          "type": "FormSection",
+          "props": {
+            "title": "Networking and access",
+            "description": "Attach the VM to a VPC/subnet and configure SSH access.",
+            "collapsible": true,
+            "defaultExpanded": true
+          },
+          "children": [
+            "net-grid",
+            "sshKey"
+          ]
+        },
+        "net-grid": {
+          "type": "Grid",
+          "props": {
+            "columns": 2,
+            "gap": "md"
+          },
+          "children": [
+            "vpc",
+            "subnet",
+            "loadBalancerClass"
+          ]
+        },
+        "vpc": {
+          "type": "TextField",
+          "props": {
+            "label": "VPC",
+            "disabled": false,
+            "placeholder": "VPC name or ID",
+            "value": {
+              "$bindState": "/spec/vpc"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "VPC is required"
+              }
+            ],
+            "validateOn": "blur",
+            "type": "text"
+          },
+          "children": []
+        },
+        "subnet": {
+          "type": "TextField",
+          "props": {
+            "label": "Subnet",
+            "disabled": false,
+            "placeholder": "Subnet name or ID",
+            "value": {
+              "$bindState": "/spec/subnet"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "Subnet is required"
+              }
+            ],
+            "validateOn": "blur",
+            "type": "text"
+          },
+          "children": []
+        },
+        "loadBalancerClass": {
+          "type": "SelectField",
+          "props": {
+            "label": "Load Balancer Class",
+            "disabled": false,
+            "placeholder": "Select class",
+            "options": [
+              {
+                "value": "kubelb",
+                "label": "kubelb"
+              }
+            ],
+            "value": {
+              "$bindState": "/spec/loadBalancerClass"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "Load Balancer Class is required"
+              }
+            ],
+            "validateOn": "blur"
+          },
+          "children": []
+        },
+        "sshKey": {
+          "type": "TextareaField",
+          "props": {
+            "label": "SSH Public Key",
+            "disabled": false,
+            "placeholder": "ssh-ed25519 AAAA... user@host",
+            "rows": 4,
+            "value": {
+              "$bindState": "/spec/sshPublicKey"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "SSH Public Key is required"
+              },
+              {
+                "type": "pattern",
+                "message": "Enter a valid SSH public key (ssh-rsa, ssh-ed25519, ecdsa-*)",
+                "args": {
+                  "pattern": "^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp(256|384|521))\\s+[^\\s]+(\\s+.*)?$"
+                }
+              }
+            ],
+            "validateOn": "blur"
+          },
+          "children": []
+        }
+      },
+      "state": {
+        "spec": {
+          "os": "ubuntu",
+          "image": "quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64",
+          "instanceType": "u1.medium",
+          "diskSize": "20Gi",
+          "vpc": "",
+          "subnet": "",
+          "loadBalancerClass": "kubelb",
+          "sshPublicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBjVU0Z7gpW4lqQQEA1rGqQIZCAmrCo9fVSZyj/DCwRt fog@local"
+        }
+      }
+    }
+  prompts: "[\"Create a form for LinuxVirtualMachine with two sections. Section \\\"Virtual machine\\\": os, image, instanceType, diskSize. Section \\\"Networking and access\\\": vpc, subnet, loadBalancerClass, sshPublicKey. Use the enum values from the schema as dropdowns, do not invent any values. Render sshPublicKey as a multi-line textarea. Label the acronyms correctly as OS, VPC and SSH Public Key.\"]"

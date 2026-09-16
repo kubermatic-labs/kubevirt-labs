@@ -1,0 +1,312 @@
+# Exported from the KDP UI builder with `just kdp-ui-export`, applied with `just kdp-ui`.
+# The ui-generator-schema-hash annotation is load-bearing: the dashboard compares it
+# against the live CRD schema and silently falls back to the default schema-derived
+# view when it does not match. Re-export after any RGD schema change.
+---
+apiVersion: "v1"
+kind: "ConfigMap"
+metadata:
+  name: "ui-config-kubev.k8c.io-v1alpha1-windowsvirtualmachine-create-form"
+  namespace: "default"
+  labels:
+    internal.kdp.k8c.io/visibility: "hidden"
+  annotations:
+    internal.kdp.k8c.io/ui-generator-schema-hash: "cc10d9b49b5a05113fdb389dba7de7bd90f812fe57fff2ca46997c7209593576"
+    internal.kdp.k8c.io/ui-generator-version: "1.0"
+data:
+  data.json: |-
+    {
+      "root": "main",
+      "elements": {
+        "main": {
+          "type": "Stack",
+          "props": {
+            "direction": "column",
+            "gap": "lg",
+            "align": "stretch"
+          },
+          "children": [
+            "title",
+            "vm-section",
+            "net-section"
+          ]
+        },
+        "title": {
+          "type": "Heading",
+          "props": {
+            "content": "WindowsVirtualMachine",
+            "level": "h2"
+          },
+          "children": []
+        },
+        "vm-section": {
+          "type": "FormSection",
+          "props": {
+            "title": "Virtual machine",
+            "description": "Configure the VM template, size, and system disk.",
+            "collapsible": false,
+            "defaultExpanded": true
+          },
+          "children": [
+            "vm-row-1",
+            "vm-row-2"
+          ]
+        },
+        "vm-row-1": {
+          "type": "FormRow",
+          "props": {
+            "columns": 2,
+            "gap": "md"
+          },
+          "children": [
+            "templateImageName",
+            "instanceType"
+          ]
+        },
+        "templateImageName": {
+          "type": "SelectField",
+          "props": {
+            "label": "Template Image Name",
+            "description": "Golden image PVC in kubermatic-virtualization to clone",
+            "disabled": false,
+            "placeholder": "Select a template image",
+            "options": [
+              {
+                "value": "windows-10-golden",
+                "label": "Windows 10 golden"
+              }
+            ],
+            "value": {
+              "$bindState": "/spec/templateImageName"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "Template Image Name is required"
+              }
+            ],
+            "validateOn": "blur"
+          },
+          "children": []
+        },
+        "instanceType": {
+          "type": "SelectField",
+          "props": {
+            "label": "Instance Type",
+            "description": "VM size. Windows requires u1.large or larger.",
+            "disabled": false,
+            "placeholder": "Select an instance type",
+            "options": [
+              {
+                "value": "u1.large",
+                "label": "U1 large"
+              },
+              {
+                "value": "u1.xlarge",
+                "label": "U1 xlarge"
+              },
+              {
+                "value": "u1.2xlarge",
+                "label": "U1 2xlarge"
+              },
+              {
+                "value": "u1.4xlarge",
+                "label": "U1 4xlarge"
+              },
+              {
+                "value": "u1.8xlarge",
+                "label": "U1 8xlarge"
+              }
+            ],
+            "value": {
+              "$bindState": "/spec/instanceType"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "Instance Type is required"
+              }
+            ],
+            "validateOn": "blur"
+          },
+          "children": []
+        },
+        "vm-row-2": {
+          "type": "FormRow",
+          "props": {
+            "columns": 2,
+            "gap": "md"
+          },
+          "children": [
+            "diskSize",
+            "vm-spacer"
+          ]
+        },
+        "diskSize": {
+          "type": "SelectField",
+          "props": {
+            "label": "Disk Size",
+            "description": "Size of the cloned system disk. Must be at least the 50Gi golden image size - a clone can grow but never shrink.",
+            "disabled": false,
+            "placeholder": "Select a disk size",
+            "options": [
+              {
+                "value": "50Gi",
+                "label": "50Gi"
+              },
+              {
+                "value": "100Gi",
+                "label": "100Gi"
+              },
+              {
+                "value": "200Gi",
+                "label": "200Gi"
+              }
+            ],
+            "value": {
+              "$bindState": "/spec/diskSize"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "Disk Size is required"
+              }
+            ],
+            "validateOn": "blur"
+          },
+          "children": []
+        },
+        "vm-spacer": {
+          "type": "Text",
+          "props": {
+            "content": "",
+            "variant": "muted",
+            "size": "sm"
+          },
+          "children": []
+        },
+        "net-section": {
+          "type": "FormSection",
+          "props": {
+            "title": "Networking and access",
+            "description": "Attach the VM to a VPC/subnet and publish RDP via a LoadBalancer.",
+            "collapsible": false,
+            "defaultExpanded": true
+          },
+          "children": [
+            "net-row-1",
+            "net-row-2"
+          ]
+        },
+        "net-row-1": {
+          "type": "FormRow",
+          "props": {
+            "columns": 2,
+            "gap": "md"
+          },
+          "children": [
+            "vpc",
+            "subnet"
+          ]
+        },
+        "vpc": {
+          "type": "TextField",
+          "props": {
+            "label": "VPC",
+            "description": "VPC in this workspace to attach to",
+            "disabled": false,
+            "type": "text",
+            "placeholder": "Enter VPC name",
+            "value": {
+              "$bindState": "/spec/vpc"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "VPC is required"
+              }
+            ],
+            "validateOn": "blur"
+          },
+          "children": []
+        },
+        "subnet": {
+          "type": "TextField",
+          "props": {
+            "label": "Subnet",
+            "description": "Subnet in this workspace to attach to",
+            "disabled": false,
+            "type": "text",
+            "placeholder": "Enter subnet name",
+            "value": {
+              "$bindState": "/spec/subnet"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "Subnet is required"
+              }
+            ],
+            "validateOn": "blur"
+          },
+          "children": []
+        },
+        "net-row-2": {
+          "type": "FormRow",
+          "props": {
+            "columns": 2,
+            "gap": "md"
+          },
+          "children": [
+            "loadBalancerClass",
+            "net-spacer"
+          ]
+        },
+        "loadBalancerClass": {
+          "type": "SelectField",
+          "props": {
+            "label": "Load Balancer Class",
+            "description": "LoadBalancer implementation that publishes RDP for this VM.",
+            "disabled": false,
+            "placeholder": "Select a load balancer class",
+            "options": [
+              {
+                "value": "kubelb",
+                "label": "Kubelb"
+              }
+            ],
+            "value": {
+              "$bindState": "/spec/loadBalancerClass"
+            },
+            "checks": [
+              {
+                "type": "required",
+                "message": "Load Balancer Class is required"
+              }
+            ],
+            "validateOn": "blur"
+          },
+          "children": []
+        },
+        "net-spacer": {
+          "type": "Text",
+          "props": {
+            "content": "",
+            "variant": "muted",
+            "size": "sm"
+          },
+          "children": []
+        }
+      },
+      "state": {
+        "spec": {
+          "templateImageName": "",
+          "instanceType": "u1.large",
+          "diskSize": "50Gi",
+          "vpc": "",
+          "subnet": "",
+          "loadBalancerClass": "kubelb"
+        }
+      }
+    }
+  prompts: "[\"Create a form for WindowsVirtualMachine. Use two sections: \\\"Virtual machine\\\" with templateImageName, instanceType and diskSize; and \\\"Networking and access\\\" with vpc, subnet and loadBalancerClass. Use the schema titles and descriptions as labels and helper text, and render enum fields as dropdowns. Important: do not invent or prefill any VPC name, subnet name or image name - vpc and subnet must default to an empty string so the user enters their own.\"]"

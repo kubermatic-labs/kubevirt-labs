@@ -27,8 +27,17 @@
   path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/title
   value: Conditions
 - op: add
-  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/v4availableIPrange/title
-  value: Available IPv4 Range
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/realName/title
+  value: Kube-OVN Name
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/vpcRealName/title
+  value: Kube-OVN VPC Name
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/availableIPs/title
+  value: Available IPs
+- op: add
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/phase/title
+  value: Phase
 - op: add
   path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/egressGatewayReady/title
   value: Egress Gateway Ready

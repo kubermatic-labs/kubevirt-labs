@@ -8,7 +8,6 @@ metadata:
   annotations:
     ovn.kubernetes.io/vpc_lb: "off"
 spec:
-  externalSubnet: ovn-default
   enableBfd: true
   staticRoutes: []
   vpcPeerings: []
@@ -17,7 +16,7 @@ spec:
 kind: Subnet
 apiVersion: kubev.k8c.io/v1alpha1
 metadata:
-  name: ubuntu-vm-subnet
+  name: ubuntu-net
   namespace: dev
 spec:
   cidr: 10.0.0.0/24
@@ -36,5 +35,5 @@ spec:
   instanceType: u1.large
   diskSize: 20Gi
   loadBalancerClass: kubelb
-  subnet: ubuntu-vm-subnet
+  subnet: ubuntu-net
   vpc: ubuntu-vm

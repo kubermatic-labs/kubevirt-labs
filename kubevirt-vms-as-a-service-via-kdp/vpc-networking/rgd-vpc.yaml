@@ -2,11 +2,8 @@
 apiVersion: kro.run/v1alpha1
 kind: ResourceGraphDefinition
 metadata:
-  # The name of the CRD will be 'compositevms.composition.kubevirt.io'
-  # The API group will be 'composition.kubevirt.io'
   name: vpcs.kubev.k8c.io
 spec:
-  # 1. Define the schema for the new CompositeVM CRD
   schema:
     apiVersion: v1alpha1
     kind: Vpc
@@ -17,21 +14,26 @@ spec:
         nextHopIP: string
         policy: string
       vpcPeerings:
-        remoteVpc: string
+        remoteVpcRef: string
         localConnectIP: string
     spec:
       staticRoutes: "[]staticRoutes"
       vpcPeerings: "[]vpcPeerings"
-      externalSubnet: string | default=external description="Unused. Kept so existing objects still validate; outbound is handled by the Subnet's egressGateway."
       enableBfd: boolean | default=false
     status:
+      # realName is the name of the kube-OVN Vpc the wrapper creates, always
+      # "<namespace>-<name>". Subnets and VMs need it, so it is surfaced here.
+      realName: ${vpc.status.realName}
       router: ${vpc.status.router}
+      phase: ${vpc.status.phase}
       enableExternal: ${vpc.status.enableExternal}
-      bfdPort: ${vpc.status.bfdPort}
     additionalPrinterColumns:
       - jsonPath: .metadata.creationTimestamp
         name: Age
         type: date
+      - jsonPath: .status.phase
+        name: Phase
+        type: string
       - jsonPath: .spec.enableBfd
         name: BFD
         type: boolean
@@ -40,23 +42,25 @@ spec:
         type: string
 
   resources:
-    # This resource creates the KubeVirt VirtualMachine
+    # KubeVirtualization's own namespaced wrapper API, not kubeovn.io directly. The
+    # wrapper is what the KubeV dashboard lists, and it owns the kube-OVN Vpc it creates
+    # (named "<namespace>-<name>"). Creating kubeovn.io objects directly, as this RGD
+    # used to, leaves them invisible to that dashboard.
     - id: vpc
       template:
-        apiVersion: kubeovn.io/v1
-        kind: Vpc
+        apiVersion: virtualization.k8c.io/v1alpha1
+        kind: VPC
         metadata:
           name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
         spec:
-          # enableExternal / extraExternalSubnets are NOT set. They need external gateway
-          # nodes (an `ovn-external-gw-config` ConfigMap plus labelled nodes), which this
-          # cluster does not have, so kube-ovn-controller rejects them every reconcile with
-          # "no external gw nodes" and status.enableExternal stays false. Outbound is
-          # provided by the VpcEgressGateway on each Subnet instead.
+          # enableExternal is NOT set. It needs external gateway nodes (an
+          # `ovn-external-gw-config` ConfigMap plus labelled nodes), which this cluster
+          # does not have, so kube-ovn-controller rejects it every reconcile with
+          # "no external gw nodes". Outbound comes from the Subnet's VpcEgressGateway.
           enableBfd: ${schema.spec.enableBfd}
           bfdPort:
             enabled: ${schema.spec.enableBfd}
             ip: 10.255.255.255
           vpcPeerings: ${schema.spec.vpcPeerings}
           staticRoutes: ${schema.spec.staticRoutes}
-          policyRoutes: []

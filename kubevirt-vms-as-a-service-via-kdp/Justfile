@@ -64,7 +64,7 @@ preflight:
 
 # Install and wire up the whole service, in dependency order.
 [group('lifecycle')]
-deploy: sc-kro kdp-service sc-agent-secret sc-agent sc-rgds sc-publish
+deploy: sc-kro kdp-service sc-agent-secret sc-agent sc-rgds sc-publish kdp-schemas kdp-ui
     @echo
     @echo "deployed - 'just kdp-bind' to consume it, 'just show-status' to check"
 
@@ -126,6 +126,42 @@ kdp-bind:
 kdp-logo image="kdp/logo-src.png" size="192":
     kdp/render-logo.sh "{{image}}" "{{size}}"
     {{kdp}} apply -f kdp/logo-configmap.yaml
+
+# The api-syncagent publishes a new APIResourceSchema when a CRD's schema changes but
+# never rewrites APIExport.spec.resources, because rebinding is the service owner's call.
+# Until it is repointed, KDP silently keeps serving the previous shape.
+# Point the APIExport at the APIResourceSchemas the agent has actually published.
+[group('kdp')]
+kdp-schemas:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{kdp}} get apiexport {{service}} -o json > /tmp/kubev-apiexport.json
+    {{sc}} get publishedresources -o json > /tmp/kubev-published.json
+    patch=$(python3 hack/apiexport-schemas.py /tmp/kubev-apiexport.json /tmp/kubev-published.json)
+    if [ -z "$patch" ]; then exit 0; fi
+    echo "$patch" > /tmp/kubev-apiexport-patch.json
+    {{kdp}} patch apiexport {{service}} --type=json --patch-file=/tmp/kubev-apiexport-patch.json
+
+# The dashboard ignores CRD additionalPrinterColumns entirely, so without these the
+# list views show only Name and Namespace.
+# Apply the custom UI configs (create forms, list views) the KDP dashboard reads.
+[group('kdp')]
+kdp-ui:
+    {{kdp}} apply -f kdp/ui-config/
+
+# Each config stores a hash of the schema it was generated against; when an RGD schema
+# changes the hash stops matching and the dashboard silently falls back to the default
+# view, so re-generate in the UI builder and re-export after any schema edit.
+# Re-export the UI configs from the cluster into kdp/ui-config/.
+[group('kdp')]
+kdp-ui-export:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for cm in $({{kdp}} get configmap -n default -o name | grep 'ui-config-kubev'); do
+      short=$(basename "$cm" | sed 's/^ui-config-kubev.k8c.io-v1alpha1-//')
+      {{kdp}} get "$cm" -n default -o json | python3 kdp/ui-config/export.py "kdp/ui-config/$short.yaml"
+      echo "exported kdp/ui-config/$short.yaml"
+    done
 
 # Grants `get` on the Service and `bind` on the APIExport to system:authenticated.
 # Let other organizations see this service in their catalog and bind it.
@@ -210,13 +246,58 @@ sc-agent:
 # Apply the kro ResourceGraphDefinitions (these create the kubev.k8c.io CRDs).
 [group('service cluster')]
 sc-rgds: && sc-titles
+    #!/usr/bin/env bash
+    set -uo pipefail
     {{sc}} apply -f vpc-networking/rgd-vpc.yaml
     {{sc}} apply -f vpc-networking/rgd-subnet.yaml
     {{sc}} apply -f linux/rgd-vm.yaml
     {{sc}} apply -f windows/rgd-vm.yaml
-    @echo "waiting for RGDs to become Active ..."
-    -{{sc}} wait --for=jsonpath='{.status.state}'=Active resourcegraphdefinition --all --timeout=120s
+    echo "waiting for RGDs to become Ready ..."
+    # Wait on conditions[Ready], NOT status.state. They disagree: kro refuses a CRD
+    # update that would drop a property and leaves Ready=False with the reason, while
+    # status.state happily stays "Active", so polling state reports success on a no-op.
+    if ! {{sc}} wait --for=condition=Ready resourcegraphdefinition --all --timeout=120s; then
+      echo
+      echo "RGDs did not become Ready:"
+      {{sc}} get resourcegraphdefinition -o json | python3 hack/rgd-not-ready.py
+      echo
+      echo 'If that says "breaking changes detected", the schema dropped a property.'
+      echo "kro v0.9.3 has no override; the CRD must be rebuilt: just sc-rgds-recreate"
+      exit 1
+    fi
     {{sc}} get resourcegraphdefinitions
+
+# A kro CRD can only gain properties in place. Dropping one is refused with "breaking
+# changes detected" and v0.9.3 has no override, so the CRD must be deleted and rebuilt -
+# which destroys every object of that kind. This refuses to run while any still exist.
+# Rebuild the CRDs of RGDs stuck on a breaking schema change. DESTRUCTIVE.
+[group('service cluster')]
+sc-rgds-recreate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    stuck=$({{sc}} get resourcegraphdefinition -o json | python3 hack/rgd-not-ready.py --breaking --names-only)
+    if [ -z "$stuck" ]; then
+      echo "no RGD is blocked on a breaking change, nothing to do"
+      exit 0
+    fi
+    echo "blocked on breaking changes:"
+    echo "$stuck" | sed 's/^/  /'
+    for rgd in $stuck; do
+      count=$({{sc}} get "$rgd" --ignore-not-found --no-headers 2>/dev/null | wc -l | tr -d ' ')
+      if [ "$count" != "0" ]; then
+        echo
+        echo "REFUSING: $rgd still has $count object(s) on the service cluster."
+        echo "Rebuilding its CRD would delete them. Remove the consumer objects first."
+        exit 1
+      fi
+    done
+    for rgd in $stuck; do
+      echo "deleting CRD $rgd so kro rebuilds it"
+      {{sc}} delete crd "$rgd" --timeout=60s
+    done
+    echo "waiting for kro to recreate the CRDs ..."
+    sleep 15
+    just sc-rgds
 
 # Stamp OpenAPI `title` onto the generated CRDs so the KDP dashboard shows "OS", "VPC"
 # and "SSH Public Key" instead of the title-cased property names "Os", "Vpc", "Ssh

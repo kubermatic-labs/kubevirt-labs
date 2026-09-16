@@ -384,3 +384,85 @@ reject at admission time is a kcp cross-workspace validating webhook hosted in t
 workspace, which means running and TLS-certing a webhook server. Not done, and probably not
 worth it for this.
 
+### Migrated to the KubeVirtualization wrapper API
+
+The network kinds now create `virtualization.k8c.io/v1alpha1` `VPC` and `Subnet` rather
+than `kubeovn.io` objects. The trigger was that the KubeV dashboard lists wrappers, so our
+networks were invisible there, but the deeper reason is the attachment model: the wrapper
+provisions a NetworkAttachmentDefinition and gives the kube-OVN Subnet a matching
+`provider`, and VMs attach through multus. Both VM RGDs moved from
+`ovn.kubernetes.io/logical_router` / `logical_switch` pod annotations to
+
+```yaml
+networks:
+- name: default
+  multus:
+    default: true
+    networkName: ${schema.metadata.namespace}/${tenantSubnet.status.realName}
+```
+
+which also keeps the `tenantVpc` / `tenantSubnet` dependency gating intact - the reference
+is still what builds the DAG edge. The Windows kind additionally moved from `masquerade`
+to `bridge`, because masquerade only works on the pod network.
+
+Four traps, all of which cost time:
+
+- **kro refuses breaking CRD updates, and `status.state` still says `Active`.** Removing
+  `externalSubnet` and `v4availableIPrange` produced
+  `cannot update CRD ...: breaking changes detected` on every reconcile while
+  `just sc-rgds` reported success, because the wait polls `status.state` and the real
+  signal is `conditions[Ready]`. The CRDs had to be deleted so kro could recreate them,
+  which is only safe because every consumer object was already gone.
+- **The APIExport does not follow the new schema.** The agent published new
+  APIResourceSchemas but `spec.resources` kept pointing at the old ones, so KDP served the
+  previous shape. It needs an explicit patch to the new schema names.
+- **Subnet names are capped at 13 characters** by an upstream bug: the wrapper copies the
+  NAD name into a label value (63 char limit) and the prefix plus `-sn` suffix already
+  uses 50. The failure is silent on the object and only visible in the controller log.
+- **The `sc-titles` patches referenced fields that no longer exist**, so they failed after
+  the schema change and had to be updated alongside it.
+
+The UI configs in `kdp/ui-config/` were regenerated afterwards through the dashboard's UI
+builder and exported into the repo. Two things worth knowing: the generator invented VPC
+and subnet values (`vpc-prod-eu1`, `subnet-prod-eu1a`) and wrote them into the form's
+initial `state`, which had to be blanked to match the Windows form's convention; and the
+list-view picker carried selections across resources, so the Vpc list view was saved with
+`spec.cidr` and `spec.vpc`, neither of which exists on that kind. Both were corrected in
+the stored ConfigMaps.
+
+Verified end to end after the migration: Ubuntu VM Running on `10.0.0.3` with
+`AgentConnected=True` and `Ubuntu 24.04.4 LTS`, Windows VM Running on `10.44.0.3`, both
+attached via multus, both subnets Ready with egress gateways on `172.30.0.11` and
+`172.30.0.12`, and all four kinds green in the dashboard.
+
+### Both silent-failure modes are now caught by the Justfile
+
+The wrapper migration was slow mostly because two steps reported success while doing
+nothing. Both are now structural rather than tribal knowledge.
+
+`sc-rgds` waits on `conditions[Ready]` instead of `status.state`. The two genuinely
+disagree: kro leaves `state: Active` on an RGD whose CRD update it refused. On failure the
+recipe prints the offending property via `hack/rgd-not-ready.py` and exits non-zero.
+Verified by deliberately deleting `status.phase` from the Vpc schema:
+
+```
+RGDs did not become Ready:
+  vpcs.kubev.k8c.io: cannot update CRD vpcs.kubev.k8c.io: breaking changes detected:
+    Property phase was removed
+```
+
+kro v0.9.3 offers no override - `RGD.spec` carries only `resources` and `schema`, and the
+controller has no relevant flag - so recovery means rebuilding the CRD. `sc-rgds-recreate`
+automates that behind a guard that refuses while objects exist, since rebuilding a CRD
+deletes them. Also verified live: with two Vpcs present it refused rather than proceeding.
+
+`kdp-schemas` repoints `APIExport.spec.resources` from each PublishedResource's
+`status.resourceSchemaName`. That field is authoritative, so unlike the manual fix during
+the migration there is no newest-by-timestamp guesswork. It is chained into `deploy` and
+no-ops when current.
+
+The remaining sharp edge is ordering: a schema change needs `sc-rgds`, then
+`sc-agent-restart`, then `kdp-schemas`. The middle step cannot be chained automatically
+because the agent needs time to observe the new CRD and publish the schema before the
+APIExport can point at it.
+

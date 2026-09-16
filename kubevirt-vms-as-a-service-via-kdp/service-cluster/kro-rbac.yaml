@@ -17,6 +17,13 @@ rules:
   - apiGroups: [kubeovn.io]
     resources: [vpcs, subnets, vpc-egress-gateways]
     verbs: ["*"]
+  # KubeVirtualization's namespaced wrapper API. The network RGDs create these rather
+  # than kubeovn.io objects directly, so that the KubeV dashboard lists them; the
+  # wrapper controller owns the kube-OVN object underneath. Whole group, because
+  # enumerating kinds fails silently with only a log line when a kind is added.
+  - apiGroups: [virtualization.k8c.io]
+    resources: ["*"]
+    verbs: ["*"]
   - apiGroups: [""]
     resources: [services]
     verbs: ["*"]

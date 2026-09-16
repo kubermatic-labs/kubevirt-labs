@@ -7,7 +7,6 @@ metadata:
   annotations:
     ovn.kubernetes.io/vpc_lb: "off"
 spec:
-  externalSubnet: ovn-default
   enableBfd: true
   staticRoutes: []
   vpcPeerings: []
@@ -16,7 +15,7 @@ spec:
 kind: Subnet
 apiVersion: kubev.k8c.io/v1alpha1
 metadata:
-  name: windows-aas-subnet
+  name: windows-net
   namespace: windows-aas
 spec:
   cidr: 10.44.0.0/24
@@ -34,5 +33,5 @@ spec:
   diskSize: 50Gi
   templateImageName: windows-10-golden
   loadBalancerClass: kubelb
-  subnet: windows-aas-subnet
+  subnet: windows-net
   vpc: windows-aas-vpc
