@@ -1,4 +1,14 @@
-# Helmfile for Kubernetes Storage (Rook Ceph v1.19)
+# Helmfile for KubeV storage on the edge box.
+#
+# kubev.yaml sets `storage: none: {}`, so KubeV ships no StorageClass of its own
+# and no Longhorn. This file fills that gap with local-path-provisioner: one
+# node, no spare block device, so hostPath directories are what actually works.
+# The postsync hook then lays down the kubev-main / kubev-vms classes, the CDI
+# config and the StorageProfile pins.
+#
+# storage/rook-ceph/ and storage/portworx/ are kept as reference for a
+# multi-node box with real disks. Neither is deployed here, and neither is
+# referenced from this helmfile - `helmfile sync` installs local-path only.
 #
 # Usage:
 #   helmfile sync                    # Install/upgrade all releases
@@ -6,17 +16,8 @@
 #   helmfile destroy                 # Uninstall all releases
 #
 # Prerequisites:
-#   - helm 3.13+ installed
-#   - helmfile installed (https://github.com/helmfile/helmfile)
+#   - helm 3.13+ and helmfile (https://github.com/helmfile/helmfile)
 #   - kubectl configured with cluster access
-#   - Block devices available on nodes (e.g., /dev/sdb)
-#   - Linux kernel 4.17+ (for full CephFS support)
-#
-# After helmfile sync, apply the CephCluster:
-#   kubectl apply -f storage/rook-ceph/ceph-cluster.yaml
-#   kubectl apply -f storage/rook-ceph/ceph-storageclass.yaml
-#
-# Reference: https://rook.io/docs/rook/v1.19
 
 helmDefaults:
   wait: true

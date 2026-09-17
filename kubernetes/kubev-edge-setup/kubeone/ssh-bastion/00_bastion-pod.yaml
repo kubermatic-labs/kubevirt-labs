@@ -1,0 +1,217 @@
+# SSH bastion for the KubeOne cluster on the edge box.
+#
+# KubeOne drives the control-plane and worker VMs entirely over SSH, and those
+# VMs only ever get a kube-ovn address (10.133.0.x / 10.133.1.x). Nothing on the
+# lab LAN can route there, so `kubeone apply` needs a jump host that sits inside
+# kube-ovn. This is it: a pod on ovn-default, reachable from the laptop through
+# a MetalLB Service (01_bastion-svc.yaml) at 10.77.33.22:22.
+#
+#   laptop 10.77.33.198
+#     -> svc/ssh-bastion  10.77.33.22:22      MetalLB L2/ARP
+#     -> pod ssh-bastion  172.25.0.x          ovn-default
+#     -> 10.133.0.x / 10.133.1.x              the VMs, via the ovn-cluster VPC
+#
+# WHY THERE IS NO SECOND INTERFACE. This started as the FOG/BWI bastion, which
+# is dual-NIC: a multus primary on an external VLAN plus a secondary into the
+# internal VPC, because there the two networks are in different VPCs and the
+# external side needs a non-VPC default route. None of that applies here:
+#
+#   - ovn-default (172.25.0.0/24) is the DEFAULT subnet of the ovn-cluster VPC,
+#     and kubeone-demo-cp / kubeone-demo-workers sit in that SAME VPC, so they
+#     are already routed to each other. One interface reaches everything.
+#   - the external hop is a MetalLB Service on the node, not a VLAN on the pod,
+#     so there is no asymmetric-routing problem to design around.
+#   - this cluster has no multus NetworkAttachmentDefinitions at all
+#     (`kubectl get network-attachment-definitions -A` is empty), so the
+#     v1.multus-cni.io/default-network annotation would strand the pod.
+#
+# The privileged netshoot/iptables sidecar went with it - it existed to do NAT
+# on the FOG side and has no job here.
+#
+# Applied by `just infra-bastion`, or directly:
+#   kubectl apply -f ssh-bastion/
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ssh-bastion-authorized-keys
+  namespace: kubermatic-virtualization
+  labels:
+    app: ssh-bastion
+data:
+  # MUST contain the key KubeOne authenticates with, i.e. the same key as
+  # controlPlane.nodeSets[].ssh.publicKeys in kubeone.yaml - the bastion hop and
+  # the VM hop are authenticated with the one key out of your ssh-agent
+  # (kubeone.yaml uses `agentSocket`, not a key file).
+  # `just preflight` fails if this drifts from kubeone.yaml.
+  authorized_keys: |
+    ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCloj8OvReuuOXtECaMo1iZD8q8newJ9hWZSxIiwOG2406uOueYOxBleb85Jl231YWWjocj6fqExvZBzsQQlrad4fy6oDL5sKZyngtkCZnWcq1DsWn8Sgas9lw2+KS67EXO/P5SHhJSOrqyU6ciktX0WViPvVqb6DnK3RepFh6Xnyl0Q/0RnpSCTomyKK2PfNsv8e80AnfxA1CtnRfeexgwiKtQUPzkEdCG1ABcdZZru3m0y7y1qR0MdYYZIK+bycacngvJCJyp8gnIXHU8dDZanHL2WGOcCpd/gjwM6iryr6IhlCZXw++PRGK1aErtvKDH7oaAMLW8qFK4+bpMdeytd4Viw/g3SH3Q7ows2xl6NTaU2F0PTXD+qAY2xna1eemet1txl1oP6KQJ2Rqc5rNU3/auhdK4PaU22D8Z2XF7gOrsoQB7dqW0BBDHg/ftVNb9BgOHGkYvxSsCavcqX3joUyFjHzhv+sD1WiOPvfRqV4fQ8h47ERvD3QXuBn+5YKeKp/0sjSCypIdK02FAFa2NxN2tEoh7wdCBX9enFU3UT7jfeW5Pf98Z6ao9hiAF80J5FIM21sMG3E3dAMb2tr8Gc8jM5QdWO4rJkG9j5v2d1umLkSxm7pN4Mxw/AE02jYNEblm9i/Pbzg8wqa9gw2gubO7A8qoKVtA1xlOnDVB+0Q== tobi@loodse.com
+    ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPr/5cZnDdT136izQK7G/tE5td5hEX39znQpuvbgypk5 tobi@yanblack.tailbf56ad.ts.net
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ssh-bastion-sshd-config
+  namespace: kubermatic-virtualization
+  labels:
+    app: ssh-bastion
+data:
+  sshd_config: |
+    Port 22
+    AddressFamily inet
+
+    # Keys only. There is no password on any account in this pod, and a
+    # password-auth sshd on a lab LAN is exactly the thing not to leave lying
+    # around.
+    PasswordAuthentication no
+    PermitEmptyPasswords no
+    PubkeyAuthentication yes
+    # Nothing needs to log in as root - use `kubectl exec` for that. The FOG
+    # original had `PermitRootLogin yes`; on a LAN-exposed sshd that is a
+    # gratuitous extra door.
+    PermitRootLogin no
+    AuthorizedKeysFile /home/bastion/.ssh/authorized_keys
+
+    # THE reason this pod exists. `ssh -J` and KubeOne's bastion support both
+    # work by asking the jump host to open a TCP forward to the VM; without
+    # this the login succeeds and every hop fails.
+    AllowTcpForwarding yes
+    AllowAgentForwarding yes
+    # A jump host does not need to hand out listening sockets or tunnels.
+    GatewayPorts no
+    PermitTunnel no
+    X11Forwarding no
+
+    # Host keys come from secret/ssh-bastion-hostkeys, not from the container
+    # filesystem, so a restart does not change the host key and break every
+    # known_hosts entry (and KubeOne's bastion hop) mid-provisioning.
+    HostKey /etc/ssh/keys/ssh_host_ed25519_key
+    HostKey /etc/ssh/keys/ssh_host_rsa_key
+
+    # KubeOne opens several connections in parallel and holds them for the
+    # length of a kubeadm run. The stock MaxStartups (10:30:100) starts
+    # randomly dropping pre-auth connections well before that is unreasonable.
+    MaxStartups 30:60:100
+    MaxSessions 20
+    ClientAliveInterval 30
+    ClientAliveCountMax 20
+
+    LogLevel INFO
+---
+# The host keys live in secret/ssh-bastion-hostkeys, created by
+# `just infra-bastion` (which generates them once and never overwrites them).
+# It is NOT in this file: private keys do not belong in a git-tracked manifest.
+#
+# A PVC was the first attempt. A Secret is the better home for three small key
+# files anyway: no dependency on storage working, and it survives the node's
+# disk being wiped, which a local-path hostPath volume does not.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ssh-bastion
+  namespace: kubermatic-virtualization
+  labels:
+    app: ssh-bastion
+spec:
+  replicas: 1
+  # One bastion at a time - a rolling update would briefly put two sshd pods
+  # behind one VIP, and externalTrafficPolicy: Local would flap the
+  # announcement while they swap.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ssh-bastion
+  template:
+    metadata:
+      labels:
+        app: ssh-bastion
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: sshd
+          image: alpine:3.21
+          # NOTE: this installs openssh at startup, so a pod restart needs
+          # egress. ovn-default has natOutgoing: true so it works, but if the
+          # edge box is offline the bastion will not come back up. The alpine
+          # layer itself is cached by containerd after the first pull.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              apk add --no-cache openssh
+
+              # Unprivileged jump-host account.
+              adduser -D -s /bin/ash bastion
+              # DO NOT DROP THIS. `adduser -D` leaves "!" in the shadow field,
+              # which sshd reads as a LOCKED account and refuses - including
+              # for pubkey auth, so the symptom is a bare
+              #   "Permission denied (publickey)"
+              # on the client and
+              #   "User bastion not allowed because account is locked"
+              # in the sshd log. "*" means "no password can ever match" without
+              # locking the account, which is what a keys-only user needs.
+              echo 'bastion:*' | chpasswd -e
+              install -d -m 700 -o bastion -g bastion /home/bastion/.ssh
+              install -m 600 -o bastion -g bastion \
+                /input/authorized_keys /home/bastion/.ssh/authorized_keys
+
+              # Host keys come from the Secret, mounted read-only at 0600.
+              # Print the fingerprints so `kubectl logs` is enough to verify
+              # what you are about to trust on first connect.
+              echo "host key fingerprints:"
+              for k in /etc/ssh/keys/ssh_host_*_key; do ssh-keygen -lf "$k"; done
+
+              exec /usr/sbin/sshd -D -e -f /config/sshd_config
+          ports:
+            - name: ssh
+              containerPort: 22
+              protocol: TCP
+          # Gates the Service endpoint on sshd actually listening. This matters
+          # more than usual: the Service is externalTrafficPolicy: Local, so
+          # MetalLB only announces the VIP while a ready pod is on the node -
+          # without the probe it would announce during the apk install and
+          # connections would be refused.
+          readinessProbe:
+            tcpSocket:
+              port: 22
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              port: 22
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: authorized-keys
+              mountPath: /input
+              readOnly: true
+            - name: sshd-config
+              mountPath: /config
+              readOnly: true
+            - name: hostkeys
+              mountPath: /etc/ssh/keys
+              readOnly: true
+      volumes:
+        - name: authorized-keys
+          configMap:
+            name: ssh-bastion-authorized-keys
+        - name: sshd-config
+          configMap:
+            name: ssh-bastion-sshd-config
+        - name: hostkeys
+          secret:
+            secretName: ssh-bastion-hostkeys
+            # sshd refuses to start on a host key that is group- or
+            # world-readable, and a Secret volume defaults to 0644.
+            defaultMode: 0600

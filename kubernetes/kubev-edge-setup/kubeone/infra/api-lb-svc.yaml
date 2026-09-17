@@ -1,0 +1,81 @@
+---
+# LAN-facing address for the KubeOne cluster's kube-apiserver.
+#
+# The gobetween pod (infra/helmfile.yaml) sits on kube-ovn's ovn-default with a
+# pinned VIP of 172.25.0.200. That address is perfect for the cluster's own
+# nodes and completely useless from the laptop: 172.25.0.0/24 is the KubeV pod
+# network, it is not routed onto the edge LAN and there is no bastion here that
+# could advertise it. Without this Service `kubectl get nodes` from the laptop
+# has nowhere to connect.
+#
+# So gobetween gets a second front door, on the LAN, via MetalLB:
+#
+#   kubev.yaml -> loadBalancer.metallb.ipRange: 10.77.33.20-10.77.33.50
+#     -> ipaddresspool.metallb.io/ippool-kubev     (the pool)
+#     -> l2advertisement.metallb.io/l2adv-kubev    (gratuitous ARP / NDP)
+#
+# Path a packet takes:
+#
+#   https://10.77.33.21:6443            <- MetalLB VIP, ARP-announced by
+#                                          metallb-speaker on kubev-host-01
+#     -> node 10.77.33.196, kube-proxy DNAT
+#     -> pod kubeone-demo-api-lb:6443   <- gobetween, TCP LB
+#     -> 10.133.0.x:6443                <- whichever control-plane VM is alive
+#
+# The two VIPs front the SAME pod, so there is one health-checked backend list
+# and no split brain. kubeone.yaml keeps 172.25.0.200 as apiEndpoint.host (the
+# in-cluster path, no hairpin through the node) and carries 10.77.33.21 in
+# apiEndpoint.alternativeNames so the apiserver certificate is valid for both.
+#
+# PREREQUISITE: MetalLB refuses to announce from a node carrying kubeadm's
+# `node.kubernetes.io/exclude-from-external-load-balancers` label, and the KubeV
+# installer re-adds it on every apply. The VIP is then allocated but never ARPed
+# - EXTERNAL-IP looks correct while `arp -n 10.77.33.21` stays "incomplete" and
+# every connection times out. `just infra-lb` clears the label first. To check
+# the announcement is real rather than just allocated:
+#
+#   kubectl get servicel2statuses.metallb.io -A   # .status.node must be set
+#   arp -n 10.77.33.21                            # must resolve to a MAC
+#
+# This is a standalone Service, not part of the gobetween chart - the chart
+# (kubeovn-gobetween v0.2.0) renders only a Deployment, ConfigMap, IPPools and
+# a PriorityClass. `helmfile sync` therefore leaves it alone.
+#
+# Applied by `just infra-lb`, or directly:
+#   kubectl -n kubermatic-virtualization apply -f infra/api-lb-svc.yaml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubeone-demo-api-lb-lan
+  namespace: kubermatic-virtualization
+  labels:
+    app.kubernetes.io/name: kubeovn-gobetween-lb
+    app.kubernetes.io/instance: kubeone-demo-api-lb
+    # Marks this object as hand-maintained, so it is obvious it is NOT part of
+    # the kubeone-demo-api-lb Helm release.
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    # PINNED so the kubeconfig never goes stale: second address of ippool-kubev
+    # (10.77.33.20 is the KubeV dashboard). The pool sits below the router's
+    # DHCP range (10.77.33.100-.199), so nothing on the LAN can hand this out.
+    metallb.io/loadBalancerIPs: 10.77.33.21
+    # Explicit pool - harmless today (there is only one) but keeps the binding
+    # stable if a second pool is ever added with autoAssign.
+    metallb.io/address-pool: ippool-kubev
+spec:
+  type: LoadBalancer
+  # The gobetween pod. These are the chart's selectorLabels
+  # (templates/_helpers.tpl): `app` plus the release name.
+  selector:
+    app: kubeovn-gobetween-lb
+    app.kubernetes.io/instance: kubeone-demo-api-lb
+  # Real client IPs in the apiserver audit log. Safe here: MetalLB only ARPs for
+  # the VIP from nodes that actually run a ready gobetween pod, and this is a
+  # single-node cluster - if the pod ever moves, the announcement follows it.
+  externalTrafficPolicy: Local
+  ports:
+    - name: https
+      port: 6443
+      targetPort: 6443
+      protocol: TCP

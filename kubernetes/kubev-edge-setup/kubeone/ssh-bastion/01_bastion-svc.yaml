@@ -1,0 +1,56 @@
+---
+# LAN-facing SSH port for the bastion pod.
+#
+# Same shape as infra/api-lb-svc.yaml: the pod lives on kube-ovn where the
+# laptop cannot reach it, and MetalLB does the last hop onto the edge LAN.
+#
+#   ssh -J bastion@10.77.33.22 ubuntu@10.133.0.2
+#     -> MetalLB VIP 10.77.33.22:22, ARP-announced by metallb-speaker
+#        on kubev-host-01
+#     -> node 10.77.33.196, kube-proxy DNAT
+#     -> pod ssh-bastion:22 on ovn-default
+#     -> TCP forward to 10.133.0.2:22 inside the ovn-cluster VPC
+#
+# PREREQUISITE, the same one that bites every LoadBalancer on this cluster:
+# MetalLB refuses to announce from a node carrying kubeadm's
+# `node.kubernetes.io/exclude-from-external-load-balancers` label, and the KubeV
+# installer re-adds it on every apply. The VIP is then allocated but never ARPed
+# - EXTERNAL-IP looks correct while `arp -n 10.77.33.22` stays "incomplete" and
+# every connection times out. `just infra-bastion` clears the label first.
+# To check the announcement is real rather than just allocated:
+#
+#   kubectl get servicel2statuses.metallb.io -A   # .status.node must be set
+#   arp -n 10.77.33.22                            # must resolve to a MAC
+#
+# Applied by `just infra-bastion`, or directly:
+#   kubectl apply -f ssh-bastion/
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: ssh-bastion
+  namespace: kubermatic-virtualization
+  labels:
+    app: ssh-bastion
+  annotations:
+    # PINNED so kubeone.yaml's ssh.bastion never goes stale: third address of
+    # ippool-kubev. .20 is the KubeV dashboard, .21 the kube-apiserver LB. The
+    # pool (10.77.33.20-.50) sits below the router's DHCP range
+    # (10.77.33.100-.199), so nothing on the LAN can hand this out.
+    metallb.io/loadBalancerIPs: 10.77.33.22
+    # Explicit pool - harmless today (there is only one) but keeps the binding
+    # stable if a second pool is ever added with autoAssign.
+    metallb.io/address-pool: ippool-kubev
+spec:
+  type: LoadBalancer
+  selector:
+    app: ssh-bastion
+  # Real client IPs in the sshd log, which is the only audit trail this box has
+  # for who jumped into the VMs. Safe here: MetalLB only ARPs for the VIP from
+  # nodes running a ready bastion pod, and this is a single-node cluster.
+  externalTrafficPolicy: Local
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22
+      protocol: TCP

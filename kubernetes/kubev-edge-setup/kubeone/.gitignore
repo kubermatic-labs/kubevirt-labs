@@ -1,0 +1,6 @@
+
+# KubeOne writes <cluster>.tar.gz next to the manifest on every `apply`. It is a
+# BACKUP OF THE CLUSTER PKI - ca.key, etcd/ca.key, front-proxy-ca.key, sa.key.
+# Anyone holding it can mint admin credentials for the cluster. Keep it out of
+# git; store it in a password manager if you need it.
+*.tar.gz

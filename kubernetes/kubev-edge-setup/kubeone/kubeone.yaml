@@ -1,0 +1,266 @@
+# KubeOne cluster on the kubev demo environment (kubev-cluster).
+#
+# KubeOne creates the control-plane VMs itself through the machine-controller
+# KubeVirt provider - there is no VM manifest, no Helm chart and no IP planning
+# in this repo any more. `controlPlane.nodeSets` is the whole control plane and
+# `dynamicWorkers` is the whole worker fleet.
+#
+# Prerequisites live in infra/ and are applied by `just infra`. See README.md.
+apiVersion: kubeone.k8c.io/v1beta2
+kind: KubeOneCluster
+name: kubev-k1-edge
+
+versions:
+  kubernetes: 1.34.7
+
+# The kube-apiserver address. Both entries front the SAME gobetween pod
+# (infra/helmfile.yaml), so there is one health-checked backend list and no
+# split brain - which is what makes swapping them a one-line change here that
+# needs no new certificate.
+#
+# KubeOne tunnels all Kubernetes API traffic through its SSH connection, so
+# neither address has to be reachable from your laptop for `kubeone apply` to
+# work - only for `kubectl` afterwards.
+#
+# `host` is the MetalLB LAN VIP (infra/api-lb-svc.yaml). It becomes kubeadm's
+# controlPlaneEndpoint, so the nodes dial it too: out of kube-ovn, onto the LAN,
+# back in through kube-proxy. One address for laptop and cluster alike is the
+# simpler story on a single-node box, and it is what `kubeone kubeconfig`
+# already writes without any rewriting.
+#
+# `alternativeNames` keeps the kube-ovn VIP on ovn-default in the apiserver
+# certificate. Put it back in `host` to keep the cluster's own traffic inside
+# kube-ovn with no hairpin - the LAN VIP then stays valid for `kubectl`.
+apiEndpoint:
+  host: "10.77.33.21"
+  port: 6443
+  alternativeNames:
+    - "172.25.0.200"
+#
+#containerRuntime:
+#  containerd: {}
+#
+#clusterNetwork:
+#  podSubnet: 10.244.0.0/16
+#  serviceSubnet: 10.224.0.0/12
+#  cni:
+#    cilium: {}
+
+cloudProvider:
+  external: true
+  kubevirt:
+    # Namespace in the infra cluster that holds the VMs, their DataVolumes and
+    # the API load balancer.
+    infraNamespace: kubermatic-virtualization
+    zoneAndRegionEnabled: false
+    # Turns on cloud-provider-kubevirt's LoadBalancer controller. A
+    # `type: LoadBalancer` Service in THIS cluster then gets a mirror Service in
+    # infraNamespace, which MetalLB gives an address from ippool-kubev
+    # (10.77.33.20-10.77.33.50) - a real address on the lab LAN. That is how
+    # Headlamp is exposed; see helmReleases at the end of this file.
+    #
+    # Unlike the DC variant, there is no KubeLB here: the edge box has no uplink
+    # to a KubeLB management cluster, and MetalLB on the LAN is enough.
+    loadBalancerEnabled: true
+    #
+    # `controlPlane:` is deliberately NOT set here. Setting it makes KubeOne
+    # create its own Service for the API endpoint, and that would work on this
+    # box - but it would be a SECOND front door next to gobetween, with its own
+    # backend list and its own idea of which control-plane VM is healthy.
+    # gobetween owns the endpoint instead, once, for both VIPs; see
+    # infra/helmfile.yaml and infra/api-lb-svc.yaml.
+
+controlPlane:
+  nodeSets:
+    # One nodeSet, one replica. KubeOne names the VM <cluster>-<nodeSet>-<idx>,
+    # so this is `kubev-k1-edge-cp-0` in namespace kubermatic-virtualization.
+    # Scale with `replicas: 3` - the gobetween backend list in
+    # infra/helmfile.yaml already covers the first five addresses of the CP
+    # subnet, so nothing else changes until a sixth control-plane VM.
+    - name: cp
+      replicas: 1
+      operatingSystem: ubuntu
+      operatingSystemSpec:
+        distUpgradeOnBoot: false
+      ssh:
+        username: ubuntu
+        agentSocket: env:SSH_AUTH_SOCK
+        # The VM only ever gets an internal kube-ovn address, so KubeOne always
+        # SSHes to 10.133.0.x, which nothing on the lab LAN can route to. The
+        # way in is the bastion pod in ssh-bastion/: it sits on ovn-default, in
+        # the same ovn-cluster VPC as kubeone-demo-cp, and MetalLB puts its
+        # sshd on the LAN at 10.77.33.22. `just infra-bastion` deploys it and
+        # proves the hop before `just apply` needs it.
+        #
+        # Both hops authenticate with the SAME agent key: this bastion trusts
+        # the publicKeys below (ssh-bastion/00_bastion-pod.yaml ships them in a
+        # ConfigMap), and so do the VMs. `just preflight` fails if they drift.
+        bastion: "10.77.33.22"
+        bastionUser: bastion
+        publicKeys:
+          - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCloj8OvReuuOXtECaMo1iZD8q8newJ9hWZSxIiwOG2406uOueYOxBleb85Jl231YWWjocj6fqExvZBzsQQlrad4fy6oDL5sKZyngtkCZnWcq1DsWn8Sgas9lw2+KS67EXO/P5SHhJSOrqyU6ciktX0WViPvVqb6DnK3RepFh6Xnyl0Q/0RnpSCTomyKK2PfNsv8e80AnfxA1CtnRfeexgwiKtQUPzkEdCG1ABcdZZru3m0y7y1qR0MdYYZIK+bycacngvJCJyp8gnIXHU8dDZanHL2WGOcCpd/gjwM6iryr6IhlCZXw++PRGK1aErtvKDH7oaAMLW8qFK4+bpMdeytd4Viw/g3SH3Q7ows2xl6NTaU2F0PTXD+qAY2xna1eemet1txl1oP6KQJ2Rqc5rNU3/auhdK4PaU22D8Z2XF7gOrsoQB7dqW0BBDHg/ftVNb9BgOHGkYvxSsCavcqX3joUyFjHzhv+sD1WiOPvfRqV4fQ8h47ERvD3QXuBn+5YKeKp/0sjSCypIdK02FAFa2NxN2tEoh7wdCBX9enFU3UT7jfeW5Pf98Z6ao9hiAF80J5FIM21sMG3E3dAMb2tr8Gc8jM5QdWO4rJkG9j5v2d1umLkSxm7pN4Mxw/AE02jYNEblm9i/Pbzg8wqa9gw2gubO7A8qoKVtA1xlOnDVB+0Q== tobi@loodse.com"
+          - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPr/5cZnDdT136izQK7G/tE5td5hEX39znQpuvbgypk5 tobi@yanblack.tailbf56ad.ts.net"
+      cloudProviderSpec:
+        virtualMachine:
+          #evictionStrategy: LiveMigrate
+
+          # Without this the VM inherits the virt-launcher pod's resolv.conf,
+          # which is the INFRA cluster's CoreDNS ClusterIP (10.96.0.10).
+          # KubeVirt's bridge DHCP hands that to the guest, and the node then
+          # depends on an infra-cluster ClusterIP being DNAT-able from inside a
+          # bridge-bound VM - fragile, and it points a KubeOne node at the wrong
+          # cluster's `cluster.local`. Give it real upstream resolvers instead.
+          # 185.12.64.1/.2 are what the infra nodes themselves use (Hetzner).
+          dnsPolicy: None
+          dnsConfig:
+            nameservers:
+              - 10.77.33.1 #edge router
+          providerNetwork:
+            name: kubeovn
+            vpc:
+              name: ovn-cluster
+              subnet:
+                # Setting a subnet also flips machine-controller to
+                # RunStrategy: Always, so a stopped control-plane VM comes back.
+                name: kubeone-demo-cp
+          template:
+            vcpus:
+              cores: 2
+            memory: 4Gi
+            primaryDisk:
+              osImage: "docker://quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64"
+              source: registry
+              pullMethod: node
+              size: "20Gi"
+              # NOT the default StorageClass: longhorn cannot serve a raw block
+              # device for a VM disk and the CDI import hangs forever.
+              storageClassName: kubev-vms
+              # RWO, not RWX: on this edge box kubev-vms is rancher.io/local-path,
+              # which rejects every access mode except ReadWriteOnce /
+              # ReadWriteOncePod and leaves the disk PVC Pending forever.
+              # Re-raise this to ReadWriteMany only together with a storage
+              # backend that can actually serve it (Rook Ceph / Longhorn) -
+              # which is also what evictionStrategy: LiveMigrate below needs.
+              storageAccessType: ReadWriteOnce
+              # volumeMode is deliberately absent - there is NO field for it.
+              # machine-controller's KubeVirt provider exposes only
+              # storageClassName + storageAccessType and never sets volumeMode
+              # on the DataVolume, so CDI resolves it from the StorageProfile of
+              # the class. kubev/storage/local-path/storageprofile.yaml pins
+              # kubev-vms to Filesystem+RWO, which is what makes these VMs land
+              # on Filesystem. Without that pin the profile is empty, CDI cannot
+              # resolve a mode, and the disk PVC hangs Pending forever.
+
+dynamicWorkers:
+  - name: worker
+    replicas: 1
+    providerSpec:
+      operatingSystem: ubuntu
+      operatingSystemSpec:
+        distUpgradeOnBoot: false
+      sshPublicKeys:
+        - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCloj8OvReuuOXtECaMo1iZD8q8newJ9hWZSxIiwOG2406uOueYOxBleb85Jl231YWWjocj6fqExvZBzsQQlrad4fy6oDL5sKZyngtkCZnWcq1DsWn8Sgas9lw2+KS67EXO/P5SHhJSOrqyU6ciktX0WViPvVqb6DnK3RepFh6Xnyl0Q/0RnpSCTomyKK2PfNsv8e80AnfxA1CtnRfeexgwiKtQUPzkEdCG1ABcdZZru3m0y7y1qR0MdYYZIK+bycacngvJCJyp8gnIXHU8dDZanHL2WGOcCpd/gjwM6iryr6IhlCZXw++PRGK1aErtvKDH7oaAMLW8qFK4+bpMdeytd4Viw/g3SH3Q7ows2xl6NTaU2F0PTXD+qAY2xna1eemet1txl1oP6KQJ2Rqc5rNU3/auhdK4PaU22D8Z2XF7gOrsoQB7dqW0BBDHg/ftVNb9BgOHGkYvxSsCavcqX3joUyFjHzhv+sD1WiOPvfRqV4fQ8h47ERvD3QXuBn+5YKeKp/0sjSCypIdK02FAFa2NxN2tEoh7wdCBX9enFU3UT7jfeW5Pf98Z6ao9hiAF80J5FIM21sMG3E3dAMb2tr8Gc8jM5QdWO4rJkG9j5v2d1umLkSxm7pN4Mxw/AE02jYNEblm9i/Pbzg8wqa9gw2gubO7A8qoKVtA1xlOnDVB+0Q== tobi@loodse.com"
+        - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPr/5cZnDdT136izQK7G/tE5td5hEX39znQpuvbgypk5 tobi@yanblack.tailbf56ad.ts.net"
+      cloudProviderSpec:
+        # Unlike the control plane, KubeOne passes the worker spec through
+        # verbatim - clusterName has to be set here.
+        clusterName: kubev-k1-edge
+        virtualMachine:
+          #evictionStrategy: LiveMigrate
+
+          # Same reason as the control plane above.
+          dnsPolicy: None
+          dnsConfig:
+            nameservers:
+              - 10.77.33.1 #edge router
+          providerNetwork:
+            name: kubeovn
+            vpc:
+              name: ovn-cluster
+              subnet:
+                name: kubeone-demo-workers
+          template:
+            vcpus:
+              cores: 2
+            memory: 4Gi
+            primaryDisk:
+              osImage: "docker://quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64"
+              source: registry
+              pullMethod: node
+              size: "20Gi"
+              storageClassName: kubev-vms
+              # Same local-path RWO constraint as the control plane above, and
+              # the same StorageProfile-driven Filesystem volumeMode.
+              storageAccessType: ReadWriteOnce
+
+# Charts KubeOne reconciles into the cluster on every `kubeone apply`, as
+# `helm upgrade --install --create-namespace`. Note the shape: in v1beta2
+# helmReleases is TOP-LEVEL (v1beta3 moves it under addons.addons[].helmRelease).
+helmReleases:
+  # Headlamp - workload UI for the cluster.
+  # https://headlamp.dev  |  chart: https://kubernetes-sigs.github.io/headlamp/
+  - chart: headlamp
+    repoURL: https://kubernetes-sigs.github.io/headlamp/
+    version: "0.45.0"
+    releaseName: headlamp
+    namespace: headlamp
+    wait: true
+    timeout: 5m
+    values:
+      - inline:
+          # LoadBalancer here, NodePort in the DC variant - because on this box
+          # the KubeVirt CCM has somewhere to put the address.
+          #
+          # `cloudProvider.kubevirt.loadBalancerEnabled: true` above switches on
+          # cloud-provider-kubevirt's LoadBalancer controller (v0.6.0, deployed
+          # by KubeOne's ccm-kubevirt addon). For this Service it creates a
+          # MIRROR Service in the INFRA cluster, in infraNamespace, also of type
+          # LoadBalancer, selecting this cluster's VMs by
+          #
+          #   cluster.x-k8s.io/role: worker
+          #   cluster.x-k8s.io/cluster-name: kubev-k1-edge   (--cluster-name)
+          #
+          # and targeting this Service's nodePort. KubeOne labels the
+          # control-plane VM `role: worker` too, so both VMs are backends.
+          # MetalLB gives the mirror an address out of ippool-kubev and the CCM
+          # copies it back here as EXTERNAL-IP.
+          #
+          #   laptop -> 10.77.33.23:80        MetalLB VIP on the lab LAN
+          #     -> infra node, kube-proxy DNAT
+          #     -> virt-launcher pod == the VM, on <nodePort>
+          #     -> tenant kube-proxy -> headlamp pod :4466
+          #
+          # The mirror is named a<service-uid> (DefaultLoadBalancerName), so
+          # never look for it by name in the infra cluster - read EXTERNAL-IP
+          # off the tenant Service instead, which is what `just headlamp` does.
+          #
+          # externalTrafficPolicy is spelled out rather than left to the chart,
+          # which renders it as `""` and leans on API-server defaulting. It is
+          # worth being explicit because the CCM copies this value onto the
+          # mirror Service: `Local` there would make MetalLB announce only from
+          # infra nodes running a matching virt-launcher pod - an extra failure
+          # mode for no gain, since the client IP is lost at the VM's nodePort
+          # hop anyway.
+          service:
+            type: LoadBalancer
+            port: 80
+            externalTrafficPolicy: Cluster
+            # cloud-provider-kubevirt copies annotations verbatim onto the
+            # mirror Service, which is the only reason MetalLB annotations work
+            # from in here - MetalLB runs in the infra cluster, not this one.
+            #
+            # Pinned so the demo URL never moves. ippool-kubev is
+            # 10.77.33.20-10.77.33.50: .20 is the KubeV dashboard, .21 the
+            # kube-apiserver (infra/api-lb-svc.yaml), .22 the SSH bastion
+            # (ssh-bastion/01_bastion-svc.yaml). Keep in step with HEADLAMP_VIP
+            # in .env - `just preflight` checks that they match.
+            annotations:
+              metallb.io/loadBalancerIPs: 10.77.33.23
+              metallb.io/address-pool: ippool-kubev
+          # Headlamp authenticates with a ServiceAccount token you paste into
+          # the UI; `just headlamp` prints one. cluster-admin is deliberate for
+          # a demo - scope it down with a read-only ClusterRole for anything
+          # real, especially with the UI on the LAN.
+          clusterRoleBinding:
+            create: true
+            clusterRoleName: cluster-admin

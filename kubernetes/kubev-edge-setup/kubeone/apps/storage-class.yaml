@@ -1,0 +1,22 @@
+# Default StorageClass for the KubeOne cluster, applied INSIDE the new cluster.
+#
+# Named kubevirt-csi, not kubev-vms, so it is never confused with the infra
+# cluster class of that name that backs it.
+#
+# KubeOne's csi-kubevirt addon installs the driver but brings no StorageClass -
+# this maps it onto the infra cluster's kubev-vms class. Anything else (longhorn
+# is the infra default) cannot serve a raw block device and the volume never
+# attaches.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: kubevirt-csi
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: csi.kubevirt.io
+parameters:
+  bus: scsi
+  infraStorageClassName: kubev-vms
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: true

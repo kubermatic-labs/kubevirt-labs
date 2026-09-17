@@ -1,0 +1,366 @@
+set dotenv-load := true
+
+_default:
+    @just --list
+
+# --- configuration -----------------------------------------------------------
+# All of it lives in .env next to this file - edit there, not here. A real
+# environment variable overrides .env, so `CLUSTER_NAME=x just status` works.
+# The defaults below only apply if .env is missing entirely.
+cluster   := env("CLUSTER_NAME", "kubev-k1-edge")
+namespace := env("INFRA_NAMESPACE", "kubermatic-virtualization")
+
+cp_subnet     := env("CP_SUBNET", "kubeone-demo-cp")
+worker_subnet := env("WORKER_SUBNET", "kubeone-demo-workers")
+api_lb        := env("API_LB", "kubeone-demo-api-lb")
+api_vip_pool  := env("API_VIP_POOL", "kubeone-demo-api-vip")
+# LAN address of the MetalLB Service in front of gobetween (infra/api-lb-svc.yaml).
+# This is the only API address reachable from the laptop.
+api_lan_svc   := env("API_LAN_SVC", "kubeone-demo-api-lb-lan")
+api_lan_vip   := env("API_LAN_VIP", "10.77.33.21")
+# SSH jump host into the kube-ovn subnets (ssh-bastion/). BASTION_VIP must match
+# ssh.bastion in kubeone.yaml - `just preflight` checks it.
+bastion_vip   := env("BASTION_VIP", "10.77.33.22")
+bastion_user  := env("BASTION_USER", "bastion")
+# LAN address of the Headlamp UI. Unlike the two above, the Service that gets it
+# lives in the KUBEONE cluster (helmReleases in kubeone.yaml) - the KubeVirt CCM
+# mirrors it into the infra cluster for MetalLB to announce.
+headlamp_vip  := env("HEADLAMP_VIP", "10.77.33.23")
+headlamp_port := env("HEADLAMP_PORT", "8081")
+
+# join() follows Rust path semantics: a bare name resolves next to this
+# Justfile, an absolute path is used as-is.
+kubev_kubeconfig   := join(justfile_directory(), env("KUBEV_KUBECONFIG", "kubev-kubeconfig"))
+sa_kubeconfig      := join(justfile_directory(), env("SA_KUBECONFIG", "infra/kubeone-infra-kubeconfig"))
+cluster_kubeconfig := join(justfile_directory(), env("CLUSTER_KUBECONFIG", "kubev-k1-edge-kubeconfig"))
+
+# kubectl/helmfile in this Justfile always talk to the INFRA cluster.
+export KUBECONFIG := kubev_kubeconfig
+
+# --- the demo ----------------------------------------------------------------
+
+# Everything: prerequisites in the infra cluster, then the cluster itself.
+up: preflight infra apply kubeconfig nodes
+
+# Fail early and loudly rather than halfway through a 10-minute provisioning run.
+preflight:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    fail=0
+    for bin in kubeone kubectl helm helmfile; do
+      command -v "$bin" >/dev/null || { echo "MISSING: $bin"; fail=1; }
+    done
+    if [ ! -r "{{ kubev_kubeconfig }}" ]; then
+      echo "MISSING: infra kubeconfig at {{ kubev_kubeconfig }} (set KUBEV_KUBECONFIG)"; fail=1
+    elif ! kubectl --request-timeout=10s get ns >/dev/null 2>&1; then
+      echo "UNREACHABLE: infra cluster via {{ kubev_kubeconfig }}"; fail=1
+    fi
+    ssh-add -l >/dev/null 2>&1 || { echo "EMPTY: ssh-agent has no keys - kubeone uses agentSocket"; fail=1; }
+    # NOT a reachability check: `just infra` is what creates the bastion, and it
+    # runs after preflight, so on a fresh cluster there is nothing to connect to
+    # yet. `just infra-bastion` does the real ssh probe once it exists.
+    yaml_bastion=$(grep -E '^\s+bastion:' kubeone.yaml | head -1 | awk '{print $2}' | tr -d '"')
+    [ "$yaml_bastion" = "{{ bastion_vip }}" ] \
+      || { echo "DRIFT: BASTION_VIP={{ bastion_vip }} but kubeone.yaml ssh.bastion: $yaml_bastion"; fail=1; }
+    # The bastion ConfigMap and the VMs must trust the same key, or the first
+    # hop works and the second one dies with a bare "Permission denied".
+    yaml_key=$(grep -oE 'ssh-rsa [A-Za-z0-9+/=]+' kubeone.yaml | head -1)
+    cm_key=$(grep -oE 'ssh-rsa [A-Za-z0-9+/=]+' ssh-bastion/00_bastion-pod.yaml | head -1)
+    [ -n "$yaml_key" ] && [ "$yaml_key" = "$cm_key" ] \
+      || { echo "DRIFT: ssh-bastion authorized_keys does not match kubeone.yaml publicKeys"; fail=1; }
+    # .env and kubeone.yaml carry these names separately - KubeOne does not
+    # template its manifest - so a drift makes every recipe look at the wrong
+    # objects. Catch it here instead of 10 minutes into a provisioning run.
+    yaml_cluster=$(grep -E '^name:' kubeone.yaml | head -1 | awk '{print $2}')
+    yaml_ns=$(grep -E '^\s+infraNamespace:' kubeone.yaml | head -1 | awk '{print $2}')
+    [ "$yaml_cluster" = "{{ cluster }}" ] \
+      || { echo "DRIFT: CLUSTER_NAME={{ cluster }} but kubeone.yaml name: $yaml_cluster"; fail=1; }
+    [ "$yaml_ns" = "{{ namespace }}" ] \
+      || { echo "DRIFT: INFRA_NAMESPACE={{ namespace }} but kubeone.yaml infraNamespace: $yaml_ns"; fail=1; }
+    yaml_hl_vip=$(grep -E 'metallb\.io/loadBalancerIPs:' kubeone.yaml | head -1 | awk '{print $2}')
+    [ "$yaml_hl_vip" = "{{ headlamp_vip }}" ] \
+      || { echo "DRIFT: HEADLAMP_VIP={{ headlamp_vip }} but kubeone.yaml pins $yaml_hl_vip"; fail=1; }
+    [ "$fail" -eq 0 ] && echo "preflight OK" || { echo; echo "preflight FAILED"; exit 1; }
+
+# Prerequisites in the infra cluster: subnets, RBAC + SA kubeconfig, API load balancer, SSH bastion.
+infra: infra-network infra-rbac infra-lb infra-bastion
+
+# Kube-OVN subnets for the control plane and the workers.
+infra-network:
+    kubectl apply -f infra/network
+    @kubectl get subnet {{ cp_subnet }} {{ worker_subnet }}
+
+# ServiceAccount + RBAC in the infra cluster, and the kubeconfig KubeOne uses for it.
+infra-rbac:
+    ./infra/sa-kubeconfig.sh --namespace {{ namespace }} --name kubeone-infra --output {{ sa_kubeconfig }}
+
+# The chart renders no Service of its own, so the gobetween Deployment
+# (infra/helmfile.yaml) and the MetalLB Service that puts it on the edge LAN
+# (infra/api-lb-svc.yaml) are applied separately.
+#
+# The `kubectl label` line is not cargo cult: MetalLB refuses to announce from a
+# node carrying kubeadm's exclude-from-external-load-balancers label, and the
+# KubeV installer re-adds it on every apply. Without it the VIP is allocated but
+# never ARPed. It is the same one-liner as `just allow-cp-node-lb` in
+# ../kubermatic-virtualization, repeated because that is a different Justfile and
+# this recipe must not depend on anyone having run it.
+#
+# The last line is the proof the announcement is real rather than just
+# allocated - ANNOUNCED-FROM must name a node.
+#
+# gobetween LB fronting the kube-apiserver, reachable at the LAN VIP.
+infra-lb:
+    helmfile sync -n {{ namespace }} -f infra/helmfile.yaml
+    @kubectl -n {{ namespace }} rollout status deploy/{{ api_lb }} --timeout=120s
+    @kubectl label nodes --all node.kubernetes.io/exclude-from-external-load-balancers- >/dev/null 2>&1 || true
+    kubectl -n {{ namespace }} apply -f infra/api-lb-svc.yaml
+    @kubectl -n {{ namespace }} get svc {{ api_lan_svc }} \
+        -o custom-columns=NAME:.metadata.name,VIP:.status.loadBalancer.ingress[0].ip,PORT:.spec.ports[0].port
+    @kubectl get servicel2statuses.metallb.io -A -l metallb.io/service-name={{ api_lan_svc }} \
+        -o custom-columns=ANNOUNCED-FROM:.status.node 2>/dev/null || true
+
+# KubeOne only ever talks to the VMs at 10.133.0.x / 10.133.1.x, which nothing
+# on the lab LAN can route to, so `kubeone apply` cannot work without this.
+#
+# The host keys are generated HERE rather than in the pod or in git: a pod
+# cannot write its own Secret without RBAC, and a private key has no business
+# in a tracked manifest. Generated once and never overwritten, so the bastion
+# keeps its identity across restarts and re-applies - regenerating them would
+# make every known_hosts entry stale and stall KubeOne mid-run.
+#
+# Delete secret/ssh-bastion-hostkeys to deliberately rotate them.
+#
+# SSH jump host into the kube-ovn subnets, on the LAN at 10.77.33.22:22.
+infra-bastion:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ns={{ namespace }}
+    if kubectl -n "$ns" get secret ssh-bastion-hostkeys >/dev/null 2>&1; then
+      echo "secret/ssh-bastion-hostkeys exists - keeping the current host keys"
+    else
+      echo "generating SSH host keys for the bastion"
+      d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+      ssh-keygen -q -t ed25519 -N '' -C ssh-bastion -f "$d/ssh_host_ed25519_key"
+      ssh-keygen -q -t rsa -b 4096 -N '' -C ssh-bastion -f "$d/ssh_host_rsa_key"
+      kubectl -n "$ns" create secret generic ssh-bastion-hostkeys \
+        --from-file="$d/ssh_host_ed25519_key" --from-file="$d/ssh_host_ed25519_key.pub" \
+        --from-file="$d/ssh_host_rsa_key"     --from-file="$d/ssh_host_rsa_key.pub"
+      kubectl -n "$ns" label secret ssh-bastion-hostkeys app=ssh-bastion --overwrite >/dev/null
+    fi
+    # Same MetalLB prerequisite as infra-lb - see the header of
+    # ssh-bastion/01_bastion-svc.yaml.
+    kubectl label nodes --all node.kubernetes.io/exclude-from-external-load-balancers- >/dev/null 2>&1 || true
+    kubectl -n "$ns" apply -f ssh-bastion/
+    kubectl -n "$ns" rollout status deploy/ssh-bastion --timeout=180s
+    kubectl -n "$ns" get svc ssh-bastion \
+      -o custom-columns=NAME:.metadata.name,VIP:.status.loadBalancer.ingress[0].ip,PORT:.spec.ports[0].port
+    kubectl get servicel2statuses.metallb.io -A -l metallb.io/service-name=ssh-bastion \
+      -o custom-columns=ANNOUNCED-FROM:.status.node
+    # Prove it end to end rather than trusting the object status.
+    echo "-- ssh probe --"
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout=10 -o BatchMode=yes \
+        {{ bastion_user }}@{{ bastion_vip }} true \
+      && echo "OK: ssh {{ bastion_user }}@{{ bastion_vip }}" \
+      || { echo "FAILED: cannot ssh to {{ bastion_user }}@{{ bastion_vip }}"; exit 1; }
+
+# Provision the cluster. Creates the control-plane VMs, then kubeadm, then the workers.
+apply:
+    KUBEVIRT_KUBECONFIG="$(cat {{ sa_kubeconfig }})" \
+      kubeone apply -m kubeone.yaml --verbose -y
+
+# KubeOne's own read-only overview of the cluster - nodes, versions, addons. Not
+# a substitute for Headlamp: it reads the KubeOne manifest and the cluster, not
+# your workloads. Binds :8080, which is why `just headlamp` defaults to 8081.
+#
+# KubeOne's cluster overview on http://localhost:8080 (--port to change it).
+ui:
+    KUBEVIRT_KUBECONFIG="$(cat {{ sa_kubeconfig }})" \
+      kubeone ui -m kubeone.yaml --verbose
+
+# KubeOne writes apiEndpoint.host as the server. That is already the MetalLB LAN
+# VIP, so the set-cluster line below is a no-op today - it is kept because the
+# two addresses in apiEndpoint are meant to be swappable, and if `host` goes
+# back to the kube-ovn VIP the generated kubeconfig would otherwise point at an
+# address no laptop can route to. API_LAN_VIP is covered by the apiserver
+# certificate either way (apiEndpoint.alternativeNames).
+#
+# Write the cluster's kubeconfig next to this Justfile, pointed at the LAN VIP.
+kubeconfig:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    KUBEVIRT_KUBECONFIG="$(cat {{ sa_kubeconfig }})" \
+      kubeone kubeconfig -m kubeone.yaml > {{ cluster_kubeconfig }}
+    chmod 600 {{ cluster_kubeconfig }}
+    name=$(kubectl --kubeconfig {{ cluster_kubeconfig }} config view \
+             -o jsonpath='{.clusters[0].name}')
+    kubectl --kubeconfig {{ cluster_kubeconfig }} config set-cluster "$name" \
+      --server="https://{{ api_lan_vip }}:6443" >/dev/null
+    echo "server: https://{{ api_lan_vip }}:6443"
+    echo "export KUBECONFIG={{ cluster_kubeconfig }}"
+
+# --- inspection --------------------------------------------------------------
+
+# Nodes of the new cluster (needs the LAN API VIP, i.e. be on the 10.77.33.0/24 lab LAN).
+nodes:
+    @kubectl --kubeconfig {{ cluster_kubeconfig }} get nodes -o wide
+
+# What the infra cluster is running for us.
+status:
+    @echo "── VMs ───────────────────────────────────────────────"
+    @kubectl -n {{ namespace }} get vm,vmi -o wide 2>/dev/null || true
+    @echo "── disks ─────────────────────────────────────────────"
+    @kubectl -n {{ namespace }} get dv,pvc 2>/dev/null || true
+    @echo "── api load balancer ─────────────────────────────────"
+    @kubectl -n {{ namespace }} get pod -l app=kubeovn-gobetween-lb \
+        -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,IP:.status.podIP 2>/dev/null || true
+    @kubectl -n {{ namespace }} get svc {{ api_lan_svc }} \
+        -o custom-columns=NAME:.metadata.name,LAN-VIP:.status.loadBalancer.ingress[0].ip,PORT:.spec.ports[0].port 2>/dev/null || true
+    @echo "── ssh bastion ───────────────────────────────────────"
+    @kubectl -n {{ namespace }} get pod -l app=ssh-bastion \
+        -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,IP:.status.podIP 2>/dev/null || true
+    @kubectl -n {{ namespace }} get svc ssh-bastion \
+        -o custom-columns=NAME:.metadata.name,LAN-VIP:.status.loadBalancer.ingress[0].ip,PORT:.spec.ports[0].port 2>/dev/null || true
+    @echo "── control plane addresses ───────────────────────────"
+    @kubectl -n {{ namespace }} get vmi -o custom-columns=NAME:.metadata.name,IP:.status.interfaces[0].ipAddress --no-headers 2>/dev/null || true
+
+# Follow the VMs coming up.
+watch:
+    @kubectl -n {{ namespace }} get vm,vmi,dv,pod -w
+
+# The Service is type LoadBalancer inside the KubeOne cluster, which by itself
+# means nothing - that cluster has no load balancer. The KubeVirt CCM is what
+# makes it real: it mirrors the Service into the infra cluster as a<service-uid>,
+# copying the MetalLB annotations along, and MetalLB pins it to HEADLAMP_VIP.
+# The CCM then writes that address back here as EXTERNAL-IP, which is why this
+# recipe reads the TENANT Service and never goes looking for the mirror by name.
+#
+# The last two lines are the same proof `just infra-lb` prints: MetalLB refuses
+# to announce from a node carrying kubeadm's
+# exclude-from-external-load-balancers label, and then the VIP is allocated but
+# never ARPed - EXTERNAL-IP looks perfect while every connection times out.
+# ANNOUNCED-FROM must name a node.
+#
+# Login token and LAN address of the Headlamp workload UI.
+headlamp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! kubectl --kubeconfig {{ cluster_kubeconfig }} -n headlamp get deploy headlamp >/dev/null 2>&1; then
+      echo "Headlamp is not deployed yet - run 'just apply' (it is a helmRelease in kubeone.yaml)." >&2
+      exit 1
+    fi
+    kubectl --kubeconfig {{ cluster_kubeconfig }} -n headlamp rollout status deploy/headlamp --timeout=60s
+    echo
+    echo "── paste this token into the Headlamp login screen ───────────────────"
+    kubectl --kubeconfig {{ cluster_kubeconfig }} -n headlamp create token headlamp --duration=8h
+    echo "──────────────────────────────────────────────────────────────────────"
+    ip=$(kubectl --kubeconfig {{ cluster_kubeconfig }} -n headlamp get svc headlamp \
+           -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    if [ -z "$ip" ]; then
+      echo "svc/headlamp has no EXTERNAL-IP yet - the KubeVirt CCM has not mirrored it."
+      echo "  kubectl -n {{ namespace }} get svc                 # infra cluster, look for a<uid>"
+      echo "  kubectl -n kube-system logs -l k8s-app=kubevirt-cloud-controller-manager"
+      echo "Not on the lab LAN? Use 'just headlamp-forward'."
+      exit 1
+    fi
+    echo "Headlamp: http://${ip}"
+    mirror=$(kubectl -n {{ namespace }} get svc --no-headers \
+               -o custom-columns=N:.metadata.name,I:.status.loadBalancer.ingress[0].ip \
+             | awk -v ip="$ip" '$2 == ip { print $1 }')
+    if [ -n "$mirror" ]; then
+      echo "infra mirror: svc/${mirror} in {{ namespace }}"
+      kubectl get servicel2statuses.metallb.io -A \
+          -l metallb.io/service-name="$mirror" \
+          -o custom-columns=ANNOUNCED-FROM:.status.node 2>/dev/null || true
+    fi
+
+# Fallback for when you are NOT on the 10.77.33.0/24 lab LAN and HEADLAMP_VIP is
+# therefore unreachable: tunnel through the kube-apiserver instead. Needs the API
+# LAN VIP, so it only helps from somewhere that can reach that but not the UI.
+#
+# Port-forward the Headlamp UI to http://localhost:<port> (Ctrl-C to stop).
+headlamp-forward port=headlamp_port:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG="{{ cluster_kubeconfig }}"
+    kubectl -n headlamp rollout status deploy/headlamp --timeout=60s
+    echo
+    echo "── paste this token into the Headlamp login screen ───────────────────"
+    kubectl -n headlamp create token headlamp --duration=8h
+    echo "──────────────────────────────────────────────────────────────────────"
+    echo "Headlamp: http://localhost:{{ port }}   (Ctrl-C to stop)"
+    exec kubectl -n headlamp port-forward svc/headlamp {{ port }}:80
+
+# SSH into a control-plane VM through the bastion.
+ssh node="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ip=$(kubectl -n {{ namespace }} get vmi {{ cluster }}-cp-{{ node }} \
+          -o jsonpath='{.status.interfaces[0].ipAddress}')
+    exec ssh -J "{{ bastion_user }}@{{ bastion_vip }}" "ubuntu@${ip}"
+
+# --- optional extras (not part of `just up`) ---------------------------------
+
+# Default StorageClass in the new cluster, backed by the infra kubev-vms class.
+app-storage:
+    kubectl --kubeconfig {{ cluster_kubeconfig }} apply -f apps/storage-class.yaml
+
+kubelb_version := env("KUBELB_VERSION", "v1.4.2")
+
+# NOT wired up on this box: apps/kubelb-ccm/ lives only in the DC tree, and
+# MetalLB on the lab LAN already gives LoadBalancer Services a real address.
+# Copy ../../kubev-dc/kubeone/apps/kubelb-ccm/ over and set KUBELB_VERSION in
+# .env first.
+#
+# KubeLB CCM in the new cluster (needs apps/kubelb-ccm/ copied in first).
+app-kubelb:
+    helm pull oci://quay.io/kubermatic/helm-charts/kubelb-ccm-ee --version={{ kubelb_version }} \
+      --untardir apps/kubelb-ccm/kubelb-ccm-{{ kubelb_version }} --untar
+    cd apps/kubelb-ccm && \
+      KUBECONFIG={{ cluster_kubeconfig }} KUBELB_VERSION={{ kubelb_version }} \
+      helmfile sync -f helmfile.yaml.gotmpl
+    rm -rf apps/kubelb-ccm/kubelb-ccm-{{ kubelb_version }}
+
+# --- teardown ----------------------------------------------------------------
+
+purge_namespace := env("PURGE_NAMESPACE", "false")
+
+# Graceful: let KubeOne destroy the workers and reset the nodes, then purge.
+down:
+    KUBEVIRT_KUBECONFIG="$(cat {{ sa_kubeconfig }})" \
+      kubeone reset -m kubeone.yaml --destroy-workers -y
+    just purge
+
+# `kubeone reset` destroys MachineDeployment workers and resets nodes over SSH,
+# but it never deletes the control-plane VMs it created - those are ours to
+# clean up.
+#
+# Delete everything KubeOne left behind. Use directly if `just down` cannot run.
+#
+# Everything here is scoped to THIS cluster: VMs by label, subnets and the IPPool
+# by name. The namespace is only deleted when PURGE_NAMESPACE=true in .env,
+# because it is shared with the rest of the demo environment by default.
+#
+# Delete every trace of this cluster from the infra cluster.
+purge:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # The cloud-init secrets carry an ownerRef on their VM, so they go with it.
+    kubectl -n {{ namespace }} delete vm -l kubeone_cluster_name={{ cluster }} --wait=false || true
+    kubectl delete -f infra/network || true
+    kubectl delete ippool {{ api_vip_pool }} || true
+    # Not part of the Helm release - `helm uninstall` would leave it behind,
+    # holding on to the MetalLB address.
+    kubectl -n {{ namespace }} delete -f infra/api-lb-svc.yaml --ignore-not-found || true
+    helm -n {{ namespace }} uninstall {{ api_lb }} 2>/dev/null || true
+    # The bastion, including its host-key Secret - leaving that behind would
+    # hand a rebuilt bastion a stale identity.
+    kubectl -n {{ namespace }} delete -f ssh-bastion/ --ignore-not-found || true
+    kubectl -n {{ namespace }} delete secret ssh-bastion-hostkeys --ignore-not-found || true
+    if [ "{{ purge_namespace }}" = "true" ]; then
+      echo "PURGE_NAMESPACE=true -> deleting namespace {{ namespace }}"
+      kubectl delete ns {{ namespace }} --wait=false || true
+    else
+      echo "Keeping namespace {{ namespace }} (PURGE_NAMESPACE is not true)."
+    fi
+    rm -f {{ cluster_kubeconfig }} {{ sa_kubeconfig }}

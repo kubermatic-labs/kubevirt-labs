@@ -1,0 +1,72 @@
+# kube-apiserver load balancer for the KubeOne cluster on the edge box.
+#
+# Why this instead of letting KubeOne create a Service: KubeOne's
+# cloudProvider.kubevirt.controlPlane.loadBalancer creates a plain Service with
+# no loadBalancerClass and points it at a Service selector, which cannot select
+# VMs that live in a kube-ovn subnet. A kube-ovn native TCP LB owns the endpoint
+# instead, which is also the shape we want when the cluster moves into its own
+# VPC later.
+#
+#   frontend  172.25.0.200 on ovn-default -> apiEndpoint.host in kubeone.yaml
+#             ovn-default here is 172.25.0.0/24 (kubev.yaml networkCIDR), NOT
+#             the 172.16.0.0/16 of the DC demo environment. kube-ovn allocates
+#             sequentially from .2 and is around .30, so .200 stays clear.
+#             This address is only reachable from inside the KubeV cluster.
+#   backend   the first five usable addresses of the control-plane subnet
+#             gobetween's "ping" healthcheck is a TCP dial (not ICMP), so
+#             addresses without a live apiserver simply never receive traffic.
+#             No IP pinning needed - machine-controller cannot pin VM IPs.
+#
+# The laptop reaches the same pod through a MetalLB Service on the edge LAN at
+# 10.77.33.21 - see infra/api-lb-svc.yaml, applied by the same `just infra-lb`.
+# The chart renders no Service of its own, so that file is standalone.
+repositories:
+  - name: kubermatic-community
+    url: git+https://github.com/kubermatic/community-components@charts/kubeovn-gobetween?ref=kubeovn-gobetween-v0.2.0
+
+releases:
+  #TODO refactor as use direct service type LB
+  - name: kubeone-demo-api-lb
+    namespace: kubermatic-virtualization
+    createNamespace: true
+    chart: kubermatic-community/kubeovn-gobetween
+    values:
+      - frontend:
+          port: 6443
+          subnet: ovn-default
+          ipPool:
+            name: kubeone-demo-api-vip
+            ips:
+              - "172.25.0.200"
+        backend:
+          port: 6443
+          ipPool:
+            # name/subnet deliberately unset: the chart only renders an IPPool
+            # when BOTH name and ips are given, and an IPPool covering the whole
+            # usable range would compete with kube-ovn's own allocation for the
+            # VMs. We only want the address list for gobetween's config here.
+            ips:
+              - "10.133.0.2"
+              - "10.133.0.3"
+              - "10.133.0.4"
+              - "10.133.0.5"
+              - "10.133.0.6"
+        gobetween:
+          healthcheck:
+            kind: ping      # TCP dial to <backend>:6443
+            interval: "5s"
+            timeout: "2s"
+            fails: 2
+            passes: 1
+        priorityClass:
+          enabled: true
+          name: kubeone-demo-api-lb
+    hooks:
+      - events: ["postsync"]
+        showlogs: true
+        command: "sh"
+        args:
+          - "-c"
+          - |
+            echo "Applying FrontFacingLB ..."
+            kubectl apply -f api-lb-svc.yaml
