@@ -196,6 +196,18 @@ dynamicWorkers:
 # Charts KubeOne reconciles into the cluster on every `kubeone apply`, as
 # `helm upgrade --install --create-namespace`. Note the shape: in v1beta2
 # helmReleases is TOP-LEVEL (v1beta3 moves it under addons.addons[].helmRelease).
+# Extra manifests KubeOne applies to the cluster on every `kubeone apply`. Every
+# DIRECTORY under addons/ whose name does not collide with an embedded addon is
+# applied automatically - loose YAML files in the addons/ root are ignored, and
+# a directory named after an embedded addon would REPLACE it.
+#
+# addons/ccm-kubevirt-lb-rbac/ is the one thing in here: the RBAC that
+# loadBalancerEnabled above needs and that KubeOne's own ccm-kubevirt addon does
+# not grant. See its header for the failure it fixes.
+addons:
+  enable: true
+  path: ./addons
+
 helmReleases:
   # Headlamp - workload UI for the cluster.
   # https://headlamp.dev  |  chart: https://kubernetes-sigs.github.io/headlamp/

@@ -21,10 +21,15 @@ just up
 | `infra/helmfile.yaml`    | gobetween TCP load balancer in front of the kube-apiserver                    |
 | `infra/api-lb-svc.yaml`  | MetalLB Service that puts that load balancer on the edge LAN at `10.77.33.21` |
 | `ssh-bastion/`           | SSH jump host into the kube-ovn subnets, on the LAN at `10.77.33.22`          |
+| `addons/`                | Manifests KubeOne applies **inside** the new cluster on every apply           |
 | `apps/`                  | Optional, applied to the new cluster after it is up                           |
 
-`apps/` is deliberately not called `addons/` - KubeOne has its own addon
-mechanism and would try to apply anything it finds there.
+`addons/` and `apps/` are not the same thing and the names are load-bearing.
+`addons/` is KubeOne's own mechanism: `addons.path` in `kubeone.yaml` points at
+it, and KubeOne applies every **directory** under it into the cluster on every
+`kubeone apply` (loose YAML in the root is ignored, and a directory named after
+an embedded addon replaces it). `apps/` sits deliberately outside that, for
+things applied by hand afterwards.
 
 ## Prerequisites
 
@@ -165,8 +170,26 @@ deliberate for a demo, and worth scoping down with a read-only ClusterRole given
 the UI sits on the LAN. Swap `clusterRoleBinding.clusterRoleName` in
 `kubeone.yaml`.
 
-If `EXTERNAL-IP` stays `<pending>`, it is the CCM; if it is set but nothing
-connects, it is the same MetalLB trap as the API VIP - a node carrying kubeadm's
+**KubeOne's ccm-kubevirt addon does not grant the RBAC this needs.** It puts
+`services: ["*"]` in a *namespaced* `Role/kccm` in `kube-system`, but
+cloud-provider's service controller runs a **cluster-scoped** Service informer,
+which a namespaced Role can never satisfy. The controller then never starts,
+`EnsureLoadBalancer` is never called, and the Service sits at `<pending>`
+forever with no event on it and nothing but this every ~30s in the CCM log:
+
+```
+failed to list *v1.Service: services is forbidden: User
+"system:serviceaccount:kube-system:cloud-controller-manager" cannot list
+resource "services" in API group "" at the cluster scope
+```
+
+`addons/ccm-kubevirt-lb-rbac/` fixes it with a supplementary ClusterRole, and
+`addons.path` in `kubeone.yaml` makes KubeOne reapply it on every run. It is a
+custom addon name on purpose: a directory called `ccm-kubevirt` would *replace*
+the embedded addon and leave us owning the whole CCM manifest.
+
+If `EXTERNAL-IP` is set but nothing connects, it is the same MetalLB trap as the
+API VIP - a node carrying kubeadm's
 `node.kubernetes.io/exclude-from-external-load-balancers` label is never ARPed
 for. `just headlamp` prints `ANNOUNCED-FROM` for exactly that reason; `just
 infra-lb` clears the label.
@@ -287,6 +310,11 @@ Watch the SNUC's RAM and SSD - every VM is 4 GiB and 20 GiB of it.
 - **`KUBEVIRT_KUBECONFIG` is passed as plain YAML, not base64.** KubeOne puts the
   value straight into the secret the CCM and CSI driver mount as a kubeconfig
   file, so a base64 blob would break them. machine-controller accepts either.
+- **`loadBalancerEnabled: true` is not enough on its own.** KubeOne's
+  ccm-kubevirt addon grants the CCM `services` in a namespaced Role, while the
+  service controller needs it cluster-scoped. Without
+  `addons/ccm-kubevirt-lb-rbac/` every LoadBalancer Service stays `<pending>`
+  and nothing says why.
 - **`kubeone config dump` hangs** on a manifest with `nodeSets` unless the
   KubeVirt credentials are real - it tries to look the VMs up. Use
   `kubeone config machinedeployments` to sanity-check a manifest offline.
