@@ -115,6 +115,7 @@ Everything else is stock `defconf`. Base was a factory-reset RouterOS 7.20.4.
 | 15| `default-authentication` | `no` on both radios    | `yes` on both radios                   | `no` + an empty access-list rejects every client in AP mode and joins nothing in station mode |
 | 16| Local AP key            | whatever was on the box | set from `CHATEAU_LAN_AP_PSK`          | without it a rebuild leaves `k8c_edge` **open** |
 | 17| LTE roaming             | `allow-roaming=no`      | `allow-roaming=yes`                    | the factory default refuses to attach outside the home network - silently |
+| 18| 5 GHz `scan-list`       | `default` (all channels) | `5180-5240` (ch 36-48, non-DFS)       | `frequency=auto` kept landing on 5600-5650 weather-radar spectrum, where the AP must listen for 10 minutes before it may transmit - the lab's 5 GHz network just never appeared |
 
 Untouched on purpose: the whole firewall filter chain, the NAT rule, the
 `LAN` interface list, the radios' SSID `k8c_edge`, and the DHCP server itself.
@@ -203,6 +204,7 @@ CHATEAU_DIST_WIRED=1                    # route priorities:
 CHATEAU_DIST_WIFI=2                     #   lowest live distance wins
 CHATEAU_DIST_LTE=3
 CHATEAU_LAN_AP_PSK=<the lab AP key>     # EMPTY = leave the router as-is
+CHATEAU_SCANLIST_5=5180-5240            # non-DFS only; keeps 5 GHz off radar channels
 CHATEAU_LTE_ROAMING=yes                 # attach to foreign carriers (needed abroad)
 CHATEAU_BGP_POOL=10.77.34.0/24          # optional: MetalLB pool learned over BGP
 WIFI_SSID=                              # optional: lets `just wifi-up` run bare
@@ -415,6 +417,23 @@ Built and tested against the live unit, RouterOS 7.20.4.
 | `.env` externalisation | `just config` resolves from `.env`; `just render` substitutes every placeholder with none left over; `just apply` imported cleanly; `just wifi-up` joined a real network with no arguments |
 
 All three uplinks and both failover hops are now exercised end to end.
+
+### LTE-only mode, WiFi serving clients (2026-09-17)
+
+Reconfigured to the "no wired, no WiFi uplink, everything over LTE" profile -
+`just wifi-off`, then `just apply`.
+
+| Check | Result |
+|-------|--------|
+| WiFi uplink removed | `wlan1` back from station-on-a-venue-SSID to `ap-bridge` on `k8c_edge`; `WAN-wifi` DHCP client gone |
+| `WAN` interface list | `lte1` + `ether1` only - neither radio is a member |
+| Wired | `ether1 running=false`, no cable, its DHCP client `stopped` |
+| Active uplink | `gw=lte1 distance=3 active=true`, the only default route |
+| LTE | Sunrise, `registered`, roaming, band B7 @ 20 MHz, address `100.76.200.36/32` (CGNAT) |
+| Internet through LTE | ping 1.1.1.1 max-rtt 71ms; `github.com` resolves to `140.82.121.3` both on the router and from a LAN client via `10.77.33.1` |
+| 2.4 GHz AP | `running-ap` on 2412, client associated at -40 dBm, 115-144 Mbps |
+| 5 GHz AP | was stuck `radar-detecting` on 5640; with `scan-list=5180-5240` it comes up `running-ap` on 5180 |
+| Survives `just apply` | re-imported: `scan-list` persisted, both radios still local APs, uplink still `lte1` |
 The `wifi-uplink` profile currently holds the PSK of the last network joined.
 It is a working credential, not a placeholder - treat the router as holding a
 secret and use `ws-stock` before handing it to anyone.
@@ -472,6 +491,18 @@ secret and use `ws-stock` before handing it to anyone.
 
   Everything here sets it to `yes` on both radios in both modes. If you ever
   restore a factory backup, set it again.
+- **5 GHz `frequency=auto` will park the AP on a radar channel.** With the
+  stock `scan-list=default` the radio picks anything it likes, including
+  5600-5650 - weather radar, where RouterOS must listen for **10 minutes**
+  before it may transmit. `/interface/wireless/monitor` sits at
+  `status: radar-detecting` the whole time, the SSID is not on the air, and
+  nothing in the log explains it. `CHATEAU_SCANLIST_5=5180-5240` restricts the
+  auto-selection to the non-DFS block, which comes up instantly.
+- **A legacy-wireless AP is only `RUNNING` once a client associates.** An idle
+  radio shows `running=false` in `/interface/print` and its bridge port shows
+  `I` (inactive), which looks broken but is not. The authority is
+  `/interface/wireless/monitor <radio> once` - `status: running-ap` means the
+  AP is beaconing and will take clients.
 - **A wrong PSK and a wrong band look identical** from `monitor`: both sit at
   `searching-for-network`. `just scan 2.4` / `just scan 5` tells them apart -
   if the SSID is not in the list for that band, the radio physically cannot

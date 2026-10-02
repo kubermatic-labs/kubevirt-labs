@@ -30,6 +30,7 @@ radio5    := env("CHATEAU_RADIO_5", "wlan2")
 lte_if    := env("CHATEAU_LTE_IF", "lte1")
 
 lan_ap    := env("CHATEAU_LAN_AP", "k8c_edge")
+scanlist5 := env("CHATEAU_SCANLIST_5", "5180-5240")
 lan_ap_psk := env("CHATEAU_LAN_AP_PSK", "")
 uplink_profile := env("CHATEAU_UPLINK_PROFILE", "wifi-uplink")
 
@@ -69,6 +70,7 @@ config:
     @echo "radios          {{ radio24 }} (2.4)  {{ radio5 }} (5)   wifi distance {{ dist_wifi }}"
     @echo "lte             {{ lte_if }}  apn {{ apn }}   distance {{ dist_lte }}"
     @echo "local ap ssid   {{ lan_ap }}"
+    @echo "5GHz scan-list  {{ scanlist5 }}  (non-DFS keeps the AP off weather-radar channels)"
     @echo "uplink profile  {{ uplink_profile }}"
     @echo "venue ssid      {{ if wifi_ssid != '' { wifi_ssid } else { '(unset)' } }}  band {{ wifi_band }}  password {{ if wifi_pass != '' { 'set in .env' } else { '(will prompt)' } }}"
 
@@ -281,6 +283,7 @@ render:
         -e 's|__RADIO_5__|{{ radio5 }}|g' \
         -e 's|__LTE_IF__|{{ lte_if }}|g' \
         -e 's|__LAN_AP__|{{ lan_ap }}|g' \
+        -e 's|__SCANLIST_5__|{{ scanlist5 }}|g' \
         -e 's|__LAN_AP_PSK__|{{ lan_ap_psk }}|g' \
         -e 's|__UPLINK_PROFILE__|{{ uplink_profile }}|g' \
         -e 's|__DIST_WIRED__|{{ dist_wired }}|g' \

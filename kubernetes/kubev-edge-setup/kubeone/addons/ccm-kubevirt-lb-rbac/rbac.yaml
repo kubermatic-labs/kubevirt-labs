@@ -1,0 +1,72 @@
+# Supplementary RBAC for the KubeVirt CCM, WITHOUT which
+# `cloudProvider.kubevirt.loadBalancerEnabled: true` silently does nothing.
+#
+# KubeOne's embedded ccm-kubevirt addon (v1.14.3,
+# addons/ccm-kubevirt/ccm-kubevirt.yaml) grants the CCM
+#
+#   Role/kccm in kube-system  ->  services: ["*"]        <- NAMESPACED
+#   ClusterRole/kccm          ->  nodes, leases          <- no services
+#
+# but cloud-provider's service controller runs a CLUSTER-SCOPED Service
+# informer. A namespaced Role can never satisfy that, so the controller never
+# starts and logs, every ~30s:
+#
+#   failed to list *v1.Service: services is forbidden: User
+#   "system:serviceaccount:kube-system:cloud-controller-manager" cannot list
+#   resource "services" in API group "" at the cluster scope
+#
+# EnsureLoadBalancer is therefore never called, no mirror Service is created in
+# the infra cluster, and every `type: LoadBalancer` Service in this cluster sits
+# at EXTERNAL-IP <pending> forever with no event and nothing on the Service to
+# explain it. The Headlamp release in kubeone.yaml is exactly that case.
+#
+# This is a custom addon directory, so KubeOne applies it on every `kubeone
+# apply` alongside the embedded ones (pkg/addons/ensure.go: local directories
+# whose name does not collide with an embedded addon are always applied). Named
+# deliberately NOT `ccm-kubevirt`, because a local directory with that name
+# would REPLACE the embedded addon and we would own the whole CCM manifest.
+#
+# Additive only: if upstream moves `services` into ClusterRole/kccm, this
+# becomes a harmless duplicate rather than a conflict.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kccm-loadbalancer
+  labels:
+    app.kubernetes.io/name: kubevirt-cloud-controller-manager
+    app.kubernetes.io/part-of: kubeone-addon-ccm-kubevirt-lb-rbac
+rules:
+  # The cluster-scoped Service informer, plus the writes the controller makes
+  # to the Service it is reconciling (finalizer, ports).
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+
+  # Writing the load balancer address back as EXTERNAL-IP.
+  - apiGroups: [""]
+    resources: ["services/status"]
+    verbs: ["update", "patch"]
+
+  # Cluster-scoped, not just kube-system: the node controller emits events
+  # against Node objects into `default`, and the service controller against the
+  # Service's own namespace.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kccm-loadbalancer
+  labels:
+    app.kubernetes.io/name: kubevirt-cloud-controller-manager
+    app.kubernetes.io/part-of: kubeone-addon-ccm-kubevirt-lb-rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kccm-loadbalancer
+subjects:
+  - kind: ServiceAccount
+    name: cloud-controller-manager
+    namespace: kube-system

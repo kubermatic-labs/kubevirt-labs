@@ -1,4 +1,4 @@
-# 2026-09-17 01:04:49 by RouterOS 7.24.4
+# 2026-09-17 14:00:52 by RouterOS 7.24.4
 # software id = <redacted>
 #
 # model = D53G-5HacD2HnD
@@ -13,7 +13,7 @@ set [ find default-name=wlan1 ] band=2ghz-b/g/n channel-width=20/40mhz-XX \
     wireless-protocol=802.11
 set [ find default-name=wlan2 ] band=5ghz-a/n/ac channel-width=\
     20/40/80mhz-XXXX disabled=no distance=indoors frequency=auto mode=\
-    ap-bridge ssid=k8c_edge wireless-protocol=802.11
+    ap-bridge scan-list=5180-5240 ssid=k8c_edge wireless-protocol=802.11
 /interface list
 add comment=defconf name=WAN
 add comment=defconf name=LAN

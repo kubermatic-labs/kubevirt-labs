@@ -60,10 +60,16 @@
     :log warning "k8c-edge: CHATEAU_LAN_AP_PSK empty - local AP profile left as-is" }
 
 # ---- both radios start as local APs -----------------------
+# scan-list on the 5 GHz radio keeps frequency=auto away from the DFS band.
+# Left to itself it happily lands on 5600-5650 (weather radar), where the AP
+# must listen for 10 minutes before it may transmit - so the lab's own 5 GHz
+# network simply does not appear. 5180-5240 (ch 36-48) is non-DFS and starts
+# instantly.
 /interface/wireless/set __RADIO_24__ mode=ap-bridge ssid="__LAN_AP__" \
     security-profile=default default-authentication=yes disabled=no
 /interface/wireless/set __RADIO_5__ mode=ap-bridge ssid="__LAN_AP__" \
-    security-profile=default default-authentication=yes disabled=no
+    security-profile=default default-authentication=yes disabled=no \
+    scan-list=__SCANLIST_5__ frequency=auto
 
 # ---- LAN --------------------------------------------------
 /ip/pool/set [find name=default-dhcp] ranges=__POOL__
