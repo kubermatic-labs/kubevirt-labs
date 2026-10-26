@@ -1,0 +1,292 @@
+# CPU and memory hotplug on Kubermatic Virtualization (KubeVirt LiveUpdate)
+#
+# KubeV v1.3 pins the KubeVirt CR to `vmRolloutStrategy: Stage`, so every CPU or memory
+# change on a running VM waits for a restart. These recipes switch the cluster to
+# `LiveUpdate` by hand, run a hotplug-ready demo VM and put everything back.
+# README.md has the demo script and the default-vs-patched overview.
+#
+#   before the demo   just preflight enable create
+#   in the demo       just ui (dashboard) or just resize 2 8, then just guest
+#   afterwards        just cleanup restore
+#   self-test         just e2e   (needs the KubeV default; leaves the cluster as it found it)
+
+set shell := ["bash", "-uc"]
+
+kubeconfig    := env("KUBEV_KUBECONFIG", "/Users/tobi/gd-k8c/kubermatic-dc/kubeconfigs/demo-envs-dc-kubevirt-kubeconfig")
+namespace     := env("KUBEV_NAMESPACE", "kubermatic-virtualization")
+vm            := env("HOTPLUG_VM", "hotplug-demo")
+# NAD of the VM's NIC; KubeV names a Kube-OVN subnet and its NAD the same
+network       := env("KUBEV_NETWORK", "kubermatic-virtualization-tenant-subnet-01-sn")
+storage_class := "kubev-vms"
+image         := "quay.io/kubermatic-virt-disks/ubuntu:24.04-amd64"
+dashboard     := env("KUBEV_DASHBOARD", "http://kubev.dc.k8c.io:8080")
+state         := justfile_directory() / ".state"
+j             := just_executable() + " --justfile " + justfile()
+
+export KUBECONFIG := kubeconfig
+
+default:
+    @just --list --unsorted --list-heading $'CPU and memory hotplug demo (KubeVirt LiveUpdate)\n\n'
+
+# ==============================================================================
+# check
+# ==============================================================================
+
+# Check cluster, storage and local tools before changing anything
+[group('check')]
+preflight:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    fail=0
+    check() { if eval "$2" >/dev/null 2>&1; then printf '  ok    %s\n' "$1"; else printf '  MISS  %s\n' "$1"; fail=1; fi; }
+    echo "cluster: $(kubectl config current-context 2>/dev/null) ({{kubeconfig}})"
+    check "kubeconfig readable"             "test -r '{{kubeconfig}}'"
+    check "cluster reachable"               "kubectl get ns {{namespace}} --request-timeout=20s"
+    check "KubeVirt deployed"               "kubectl -n kubevirt get kubevirt kubevirt -o jsonpath='{.status.phase}' | grep -qx Deployed"
+    check "storage class {{storage_class}}" "kubectl get sc {{storage_class}}"
+    check "{{storage_class}} hands out RWX" "kubectl get storageprofile {{storage_class}} -o jsonpath='{.status.claimPropertySets[0].accessModes[0]}' | grep -qx ReadWriteMany"
+    check "network {{network}}"             "kubectl -n {{namespace}} get network-attachment-definitions {{network}}"
+    check "2+ nodes to migrate between"     "test \$(kubectl get nodes -l kubevirt.io/schedulable=true -o name | wc -l) -ge 2"
+    check "virtctl, jq, perl"               "command -v virtctl && command -v jq && command -v perl"
+    echo
+    echo "KubeVirt $(kubectl -n kubevirt get kubevirt kubevirt -o jsonpath='{.status.observedKubeVirtVersion}'), vmRolloutStrategy: $(kubectl -n kubevirt get kubevirt kubevirt -o jsonpath='{.spec.configuration.vmRolloutStrategy}')"
+    exit $fail
+
+# Rollout strategy, the demo VMs with their hotplug headroom, recent migrations
+[group('check')]
+status:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    strategy=$(kubectl -n kubevirt get kubevirt kubevirt -o jsonpath='{.spec.configuration.vmRolloutStrategy}')
+    saved=$(cat "{{state}}/rollout-strategy.orig" 2>/dev/null || true)
+    echo "vmRolloutStrategy: ${strategy:-unset}${saved:+  (was $saved before 'just enable', undo with 'just restore')}"
+    kubectl -n {{namespace}} get vmi -l app.kubernetes.io/part-of=kubevirt-labs-hotplug -o json | jq -r '
+      .items[] | .spec.domain.cpu as $c | .status as $s | ($s.currentCPUTopology.sockets // $c.sockets) as $sk |
+      "\(.metadata.name) on \($s.nodeName // "-"): \($sk * ($c.cores // 1) * ($c.threads // 1)) vCPU (sockets \($sk) x cores \($c.cores // 1), max sockets \($c.maxSockets // "-"))" +
+      " | memory \($s.memory.guestCurrent // .spec.domain.memory.guest // "-") (max \(.spec.domain.memory.maxGuest // "-"))" +
+      " | live-migratable: \([$s.conditions[]? | select(.type == "LiveMigratable") | .status][0] // "-")"'
+    kubectl -n {{namespace}} get vm -l app.kubernetes.io/part-of=kubevirt-labs-hotplug -o json | jq -r '
+      .items[] | [.status.conditions[]? | select(.type == "RestartRequired")][0] as $rr | select($rr) |
+      "\(.metadata.name): RESTART REQUIRED - \($rr.message)"'
+    kubectl -n {{namespace}} get vmim -o json | jq -r --arg vm "{{vm}}" '
+      [.items[] | select(.spec.vmiName == $vm)] | sort_by(.metadata.creationTimestamp) | .[-3:][] |
+      "migration \(.metadata.name): \(.status.phase) \(.status.migrationState.sourceNode // "?") -> \(.status.migrationState.targetNode // "?")"'
+
+# ==============================================================================
+# cluster
+# ==============================================================================
+
+# Switch the whole cluster to vmRolloutStrategy LiveUpdate (saves the old value for `just restore`)
+[group('cluster')]
+enable:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{state}}"
+    current=$(kubectl -n kubevirt get kubevirt kubevirt -o jsonpath='{.spec.configuration.vmRolloutStrategy}')
+    if [ ! -f "{{state}}/rollout-strategy.orig" ]; then
+      echo "${current:-unset}" > "{{state}}/rollout-strategy.orig"
+      kubectl -n kubevirt get kubevirt kubevirt -o jsonpath='{.spec.configuration}' > "{{state}}/kubevirt-configuration.orig.json"
+    fi
+    if [ "$current" = LiveUpdate ]; then echo "vmRolloutStrategy is already LiveUpdate"; exit 0; fi
+    kubectl -n kubevirt patch kubevirt kubevirt --type merge -p '{"spec":{"configuration":{"vmRolloutStrategy":"LiveUpdate"}}}' >/dev/null
+    echo "vmRolloutStrategy: ${current:-unset} -> LiveUpdate (cluster-wide; 'just restore' undoes it, a 'kubev apply' reverts it too)"
+    echo "VMs that are already running get the hotplug headroom at their next restart."
+
+# Put vmRolloutStrategy back to the value `just enable` found (KubeV default: Stage)
+[group('cluster')]
+restore:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target=$(cat "{{state}}/rollout-strategy.orig" 2>/dev/null || echo Stage)
+    if [ "$target" = unset ]; then
+      kubectl -n kubevirt patch kubevirt kubevirt --type json -p '[{"op":"remove","path":"/spec/configuration/vmRolloutStrategy"}]' >/dev/null
+    else
+      kubectl -n kubevirt patch kubevirt kubevirt --type merge -p "$(jq -nc --arg s "$target" '{spec: {configuration: {vmRolloutStrategy: $s}}}')" >/dev/null
+    fi
+    rm -f "{{state}}/rollout-strategy.orig" "{{state}}/kubevirt-configuration.orig.json"
+    echo "vmRolloutStrategy: $(kubectl -n kubevirt get kubevirt kubevirt -o jsonpath='{.spec.configuration.vmRolloutStrategy}')"
+
+# ==============================================================================
+# demo
+# ==============================================================================
+
+# Create the hotplug-ready demo VM (RWX disk, 1 socket x 2 cores, memory.guest 4Gi) and wait for it
+[group('demo')]
+create:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export VM="{{vm}}" NAMESPACE="{{namespace}}" STORAGE_CLASS="{{storage_class}}" IMAGE="{{image}}" NETWORK="{{network}}"
+    perl -pe 's/\$\{(\w+)\}/exists $ENV{$1} ? $ENV{$1} : $&/ge' "{{justfile_directory()}}/hotplug-demo-vm.yaml" | kubectl apply -f -
+    echo "waiting for the disk import and the first boot (~2 min) ..."
+    {{j}} _wait
+    {{j}} status
+
+# What the guest itself sees: vCPUs online, memory, boot time and boot id (unchanged boot id = no reboot)
+[group('demo')]
+guest:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # The guest prints this line itself (guest-report in the VM's cloud-init) within 2 s of a
+    # change, so wait one round, then read it from the serial console log - no network path needed.
+    sleep 3
+    for _ in $(seq 25); do {{j}} _report 2>/dev/null && exit 0; sleep 3; done
+    echo "no line from the guest for 75 s - is the VM running? see 'just status'"; exit 1
+
+# Set the CPU sockets of the running demo VM (live up to 4x the boot value) and follow the hotplug
+[group('demo')]
+cpu sockets:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kubectl -n {{namespace}} patch vm {{vm}} --type merge -p "$(jq -nc --argjson s {{sockets}} '{spec: {template: {spec: {domain: {cpu: {sockets: $s}}}}}}')" >/dev/null
+    echo "{{vm}}: sockets -> {{sockets}}"
+    {{j}} _follow cpu {{sockets}}
+
+# Set memory.guest of the running demo VM in GiB (live up to 4x the boot value) and follow the hotplug
+[group('demo')]
+mem gib:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kubectl -n {{namespace}} patch vm {{vm}} --type merge -p "$(jq -nc --arg m "{{gib}}Gi" '{spec: {template: {spec: {domain: {memory: {guest: $m}}}}}}')" >/dev/null
+    echo "{{vm}}: memory.guest -> {{gib}}Gi"
+    {{j}} _follow mem {{gib}}Gi
+
+# Sockets and memory (GiB) in one change, like one save of the dashboard's sizing section
+[group('demo')]
+resize sockets gib:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kubectl -n {{namespace}} patch vm {{vm}} --type merge -p "$(jq -nc --argjson s {{sockets}} --arg m "{{gib}}Gi" '{spec: {template: {spec: {domain: {cpu: {sockets: $s}, memory: {guest: $m}}}}}}')" >/dev/null
+    echo "{{vm}}: sockets -> {{sockets}}, memory.guest -> {{gib}}Gi"
+    {{j}} _follow cpu {{sockets}}
+    {{j}} _follow mem {{gib}}Gi
+
+# Open the demo VM's edit page in the KubeV dashboard (Sockets, Memory (GB), then "Save without restarting")
+[group('demo')]
+ui:
+    #!/usr/bin/env bash
+    url="{{dashboard}}/virtual-machines/{{namespace}}/{{vm}}/edit"
+    echo "$url"
+    for o in open xdg-open; do if command -v $o >/dev/null; then $o "$url"; break; fi; done
+
+# Live view for a second terminal: demo VMs, headroom, migrations (Ctrl-C to stop)
+[group('demo')]
+watch:
+    #!/usr/bin/env bash
+    while :; do out=$({{j}} status 2>&1); printf '\033[H\033[2J%s\n\n%s\n' "$(date +%T)" "$out"; sleep 3; done
+
+# Restart the demo VM - needed once for a VM that booted before `just enable`
+[group('demo')]
+restart:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    old=$(kubectl -n {{namespace}} get vmi {{vm}} -o jsonpath='{.metadata.uid}')
+    virtctl restart -n {{namespace}} {{vm}} 2> >(grep -vE 'client virtctl version|Client Version|Server Version' >&2)
+    {{j}} _wait "$old"
+    {{j}} status
+
+# ==============================================================================
+# lifecycle
+# ==============================================================================
+
+# Delete the demo VM (its DataVolume and PVC go with it)
+[group('lifecycle')]
+cleanup:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    kubectl -n {{namespace}} delete vm {{vm}} --ignore-not-found --wait=true
+    kubectl -n {{namespace}} wait --for=delete pvc/{{vm}} --timeout=180s >/dev/null 2>&1 || true
+    left=$(kubectl -n {{namespace}} get vm,dv,pvc -o name | grep -E "/{{vm}}$" || true)
+    if [ -n "$left" ]; then echo "still there: $left"; exit 1; fi
+    echo "demo VM and its disk are gone"
+
+# Self-test: Stage behaviour, enable, restart, live CPU + memory, then cleanup + restore
+[group('lifecycle')]
+e2e:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export HOTPLUG_VM=hotplug-e2e
+    strategy=$(kubectl -n kubevirt get kubevirt kubevirt -o jsonpath='{.spec.configuration.vmRolloutStrategy}')
+    if [ "$strategy" = LiveUpdate ] || [ -f "{{state}}/rollout-strategy.orig" ]; then
+      echo "e2e starts from the KubeV default (Stage, nothing enabled) - run 'just cleanup restore' first"; exit 1
+    fi
+    trap 'echo; echo "== cleanup + restore"; {{j}} cleanup; {{j}} restore' EXIT
+    # run a recipe, show its output, fail unless it printed the wanted verdict and no other one
+    expect() {
+      local want=$1 out bad; shift
+      out=$("$@" | tee /dev/stderr) || { echo "FAIL: '$*' failed"; exit 1; }
+      bad=$(grep -E '^(LIVE|RESTART REQUIRED|RESTARTED|TIMEOUT)' <<<"$out" | grep -v "^$want" || true)
+      if [ -n "$bad" ] || ! grep -q "^$want" <<<"$out"; then echo "FAIL: '$*' - expected $want"; exit 1; fi
+    }
+    started=$(date +%s)
+    {{j}} preflight
+    echo "== 1. KubeV default ($strategy): a CPU change waits for a restart"
+    {{j}} create
+    expect "RESTART REQUIRED" {{j}} cpu 2
+    echo "== 2. LiveUpdate on; the running VM restarts once and comes back with the headroom"
+    {{j}} enable
+    {{j}} restart
+    before=$({{j}} guest | tee /dev/stderr)
+    echo "== 3. live hotplug"
+    expect LIVE {{j}} cpu 3
+    expect LIVE {{j}} mem 8
+    expect LIVE {{j}} resize 4 12
+    after=$({{j}} guest | tee /dev/stderr)
+    [ "${before##*boot id }" = "${after##*boot id }" ] || { echo "FAIL: the guest rebooted (boot id changed)"; exit 1; }
+    case "$after" in *OFFLINE*) echo "FAIL: hot-added vCPUs stayed offline in the guest"; exit 1;; esac
+    echo "== e2e passed in $(( ($(date +%s) - started) / 60 )) min"
+
+# ==============================================================================
+# internal
+# ==============================================================================
+
+# Wait until the VM's instance is ready - a new instance if OLD_UID is given - and its guest has reported
+_wait old_uid="":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    start=$(date +%s); end=$(( start + 600 ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+      IFS='|' read -r uid ready < <(kubectl -n {{namespace}} get vmi {{vm}} -o jsonpath='{.metadata.uid}|{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+      # on the first boot, cloud-init starts guest-report as its last step
+      if [ -n "${uid:-}" ] && [ "$uid" != "{{old_uid}}" ] && [ "${ready:-}" = True ] && {{j}} _report >/dev/null 2>&1; then
+        echo "{{vm}}: ready after $(( $(date +%s) - start ))s"; exit 0
+      fi
+      sleep 5
+    done
+    echo "{{vm}}: not ready after 10 min - check: kubectl -n {{namespace}} get vm,vmi,dv,pod"; exit 1
+
+# The last line the guest printed to its serial console, from the log of the VM's active virt-launcher pod
+_report:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    IFS='|' read -r uid node < <(kubectl -n {{namespace}} get vmi {{vm}} -o jsonpath='{.metadata.uid}|{.status.nodeName}' 2>/dev/null || true)
+    [ -n "${uid:-}" ] && [ -n "${node:-}" ] || exit 1
+    pod=$(kubectl -n {{namespace}} get pod -l kubevirt.io/created-by="$uid" --field-selector=spec.nodeName="$node",status.phase=Running -o name 2>/dev/null | head -1)
+    [ -n "$pod" ] || exit 1
+    kubectl -n {{namespace}} logs "$pod" -c guest-console-log 2>/dev/null | tr -d '\r' | grep -ao 'guest: [0-9].*' | tail -1 | grep .
+
+# Follow a CPU or memory change until it is live, waits for a restart, or 5 min passed
+_follow what target:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ns={{namespace}}; vm={{vm}}; start=$(date +%s); since=$(date -u +%Y-%m-%dT%H:%M:%SZ); last=""
+    # Kubernetes quantity -> plain number, so 8Gi and 8388608Ki compare equal
+    num() { awk -v q="$1" 'BEGIN { u = q; sub(/^[0-9.]+/, "", u); f["Ki"] = 2^10; f["Mi"] = 2^20; f["Gi"] = 2^30; f["Ti"] = 2^40; f["k"] = 1e3; f["M"] = 1e6; f["G"] = 1e9; printf "%.0f", (q + 0) * (u in f ? f[u] : 1) }'; }
+    if [ "{{what}}" = cpu ]; then path='{.status.currentCPUTopology.sockets}'; cond=HotVCPUChange
+    else path='{.status.memory.guestCurrent}'; cond=HotMemoryChange; fi
+    uid0=$(kubectl -n $ns get vmi $vm -o jsonpath='{.metadata.uid}')
+    sleep 2
+    while :; do
+      t=$(( $(date +%s) - start ))
+      rr=$(kubectl -n $ns get vm $vm -o jsonpath='{.status.conditions[?(@.type=="RestartRequired")].message}')
+      if [ -n "$rr" ]; then echo "RESTART REQUIRED: $rr"; exit 0; fi
+      IFS='|' read -r uid cur hot node < <(kubectl -n $ns get vmi $vm -o jsonpath="{.metadata.uid}|${path}|{.status.conditions[?(@.type==\"$cond\")].status}|{.status.nodeName}" 2>/dev/null || true)
+      if [ -n "${uid:-}" ] && [ "$uid" != "$uid0" ]; then echo "RESTARTED after ${t}s: the VM was shut down and booted again (evicted, not live)"; exit 0; fi
+      mig=$(kubectl -n $ns get vmim -o json | jq -r --arg vm $vm --arg since "$since" '
+        [.items[] | select(.spec.vmiName == $vm and .metadata.creationTimestamp >= $since)] | sort_by(.metadata.creationTimestamp) | last |
+        if . then "\(.status.phase)" else "-" end')
+      line="{{what}}=${cur:-} hotplug=${hot:-none} migration=$mig node=${node:-}"
+      if [ "$line" != "$last" ]; then echo "  +${t}s $line"; last=$line; fi
+      if [ -n "${cur:-}" ] && [ "$(num "$cur")" = "$(num "{{target}}")" ] && [ -z "${hot:-}" ]; then echo "LIVE after ${t}s: {{what}} is {{target}}, same VMI, no restart"; exit 0; fi
+      if [ $t -ge 300 ]; then echo "TIMEOUT after ${t}s"; exit 1; fi
+      sleep 3
+    done

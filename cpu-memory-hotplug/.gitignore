@@ -1,0 +1,2 @@
+# per-run state: generated SSH keys, the saved vmRolloutStrategy for `just restore`
+.state/

@@ -1,0 +1,107 @@
+# Hotplug-ready demo VM. `just create` fills in the ${...} values and applies it.
+# The settings that make CPU and memory hot-pluggable are marked "hotplug:". The NIC is
+# wired like one from the dashboard's create form, so its edit page shows no warnings.
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: ${VM}
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/part-of: kubevirt-labs-hotplug
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+  - metadata:
+      name: ${VM}
+    spec:
+      source:
+        registry:
+          pullMethod: node
+          url: docker://${IMAGE}
+      storage:
+        # hotplug: no accessModes, so the StorageProfile of kubev-vms hands out RWX/Block
+        # (the dashboard's "Automatic"). RWX makes the VM live-migratable, and every CPU or
+        # memory hotplug is a live migration into a bigger virt-launcher pod.
+        storageClassName: ${STORAGE_CLASS}
+        resources:
+          requests:
+            storage: 15Gi
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: kubevirt-labs-hotplug
+      annotations:
+        # The Kube-OVN subnet behind the NAD, as the dashboard writes it. A bridge NIC through
+        # Multus is live-migratable, and the VM keeps its IP.
+        ${NETWORK}.${NAMESPACE}.ovn.kubernetes.io/logical_switch: ${NETWORK}
+    spec:
+      domain:
+        cpu:
+          sockets: 1   # hotplug: only sockets grow live, up to 4x the boot value
+          cores: 2     # cores and threads need a restart
+          threads: 1
+        memory:
+          guest: 4Gi   # hotplug: memory.guest grows live, up to 4x; no resources.requests.memory
+        devices:
+          networkInterfaceMultiqueue: true   # the dashboard sets it too, hotplug works with it
+          logSerialConsole: true             # `just guest` reads the guest's report from this log
+          disks:
+          - name: rootdisk
+            disk: {bus: virtio}
+          - name: cloudinitdisk
+            disk: {bus: virtio}
+          interfaces:
+          - name: net0
+            model: virtio
+            bridge: {}
+      networks:
+      - name: net0
+        multus:
+          networkName: ${NAMESPACE}/${NETWORK}
+          default: true
+      volumes:
+      - name: rootdisk
+        dataVolume:
+          name: ${VM}
+      # No SSH and nothing from the internet: virtctl ssh can't reach into a VPC, and a VPC subnet
+      # may have no egress. Instead /usr/local/bin/guest-report prints what the guest itself sees to
+      # its VNC console on every change, and to its serial console (logged, read by `just guest`)
+      # also once a minute. KubeVirt takes at most 2048 bytes of user data inline.
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: ${VM}
+            write_files:
+              # Ubuntu onlines hot-added vCPUs only on Hyper-V and Xen, not on KVM
+              - path: /etc/udev/rules.d/80-hotplug-cpu-online.rules
+                content: |
+                  SUBSYSTEM=="cpu", ACTION=="add", TEST=="online", ATTR{online}=="0", ATTR{online}="1"
+              # one line, under 80 columns; an unchanged boot id = no reboot
+              - path: /usr/local/bin/guest-report
+                permissions: "0755"
+                content: |
+                  #!/bin/sh
+                  last() { echo $(( $(tr , '\n' < $1 | tail -1 | cut -d- -f2) + 1 )); }
+                  n=0
+                  while :; do
+                    on=$(nproc) present=$(last /sys/devices/system/cpu/present)
+                    max=$(last /sys/devices/system/cpu/possible)
+                    mem=$(awk '/MemTotal/ {printf "%.1f", $2 / 1048576}' /proc/meminfo)
+                    off=; [ $present -gt $on ] && off=" - $((present - on)) hot-added but OFFLINE"
+                    line="guest: $on vCPUs online (max $max)$off | $mem GiB memory | booted $(uptime -s | cut -c12-16), boot id $(cut -c1-8 /proc/sys/kernel/random/boot_id)"
+                    [ "$line" != "$prev" ] && printf '\n%s\n' "$line" > /dev/tty1
+                    if [ "$line" != "$prev" ] || [ $n -ge 30 ]; then
+                      printf '\n%s\n' "$line" > /dev/ttyS0; n=0
+                    fi
+                    prev=$line n=$((n + 1)); sleep 2
+                  done
+              - path: /etc/systemd/system/guest-report.service
+                content: |
+                  [Service]
+                  ExecStart=/usr/local/bin/guest-report
+                  [Install]
+                  WantedBy=multi-user.target
+            runcmd:
+              - [ udevadm, control, --reload ]
+              - [ systemctl, enable, --now, guest-report.service ]
