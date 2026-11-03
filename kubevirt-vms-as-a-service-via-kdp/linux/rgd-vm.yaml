@@ -152,8 +152,11 @@ spec:
                 registry:
                   url: docker://${schema.spec.image}
               storage:
+                # RWX so a node drain can live-migrate the VM: KubeVirt will not migrate a
+                # VMI that has an RWO disk. Block mode, as in the Windows kind.
                 accessModes:
-                - ReadWriteOnce
+                - ReadWriteMany
+                volumeMode: Block
                 resources:
                   requests:
                     storage: ${schema.spec.diskSize}
@@ -191,7 +194,11 @@ spec:
               dnsConfig:
                 nameservers:
                 - 8.8.8.8
-              evictionStrategy: External
+              # A node drain live-migrates the VM. LiveMigrateIfPossible, not LiveMigrate:
+              # a VMI that cannot migrate (e.g. one still on an RWO disk) is then evicted
+              # and restarted on another node instead of blocking the drain. External
+              # blocked every drain, because nothing here acts on its evacuation mark.
+              evictionStrategy: LiveMigrateIfPossible
               networks:
               # Attached through multus, not the pod network. The wrapper Subnet
               # provisions a NetworkAttachmentDefinition named after status.realName and
@@ -267,8 +274,11 @@ spec:
                 registry:
                   url: docker://${schema.spec.image}
               storage:
+                # RWX so a node drain can live-migrate the VM: KubeVirt will not migrate a
+                # VMI that has an RWO disk. Block mode, as in the Windows kind.
                 accessModes:
-                - ReadWriteOnce
+                - ReadWriteMany
+                volumeMode: Block
                 resources:
                   requests:
                     storage: ${schema.spec.diskSize}
@@ -306,7 +316,11 @@ spec:
               dnsConfig:
                 nameservers:
                 - 8.8.8.8
-              evictionStrategy: External
+              # A node drain live-migrates the VM. LiveMigrateIfPossible, not LiveMigrate:
+              # a VMI that cannot migrate (e.g. one still on an RWO disk) is then evicted
+              # and restarted on another node instead of blocking the drain. External
+              # blocked every drain, because nothing here acts on its evacuation mark.
+              evictionStrategy: LiveMigrateIfPossible
               networks:
               # Attached through multus, not the pod network. The wrapper Subnet
               # provisions a NetworkAttachmentDefinition named after status.realName and
