@@ -15,6 +15,12 @@ Notable changes to the KubeVirt-VMs-as-a-Service KDP offering. Dates are the com
   kube-OVN pod annotations.
 - `Vpc.spec.vpcPeerings[].remoteVpc` renamed to `remoteVpcRef`.
 - `deploy` now also runs `kdp-schemas` and `kdp-ui`.
+- Linux VMs get a `ReadWriteMany` block root disk and
+  `evictionStrategy: LiveMigrateIfPossible`, so a node drain live-migrates them. With
+  `External` a drain hung forever: KubeVirt only marks the VMI for evacuation, and nothing
+  acted on the mark. Existing VMs keep their `ReadWriteOnce` disk, since a PVC's access
+  mode cannot change. From their next restart on, a drain shuts them down and starts them
+  on another node instead of hanging.
 
 ### Added
 
